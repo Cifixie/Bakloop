@@ -60,7 +60,10 @@ async function main() {
     .replace(/^statuses:\s*\[.*\]\s*$/m, statusesLine)
     .replace(/^default_status:\s*.*$/m, `default_status: "${STATUS.backlog}"`)
     // Single local store, no remote configured; avoid backlog.md's remote warning.
-    .replace(/^remote_operations:\s*.*$/m, "remote_operations: false");
+    .replace(/^remote_operations:\s*.*$/m, "remote_operations: false")
+    // The store is its own git repo (never the target repo's), so committing
+    // every task write is safe and keeps its history durable.
+    .replace(/^auto_commit:\s*.*$/m, "auto_commit: true");
   if (updated !== raw) {
     await writeFile(configPath, updated, "utf-8");
     console.info(`Set pipeline statuses in ${configPath}`);

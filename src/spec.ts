@@ -3,22 +3,44 @@ const AC_LINE = /^\s*(?:\d+[.):]|[-*])\s+(.*)$/;
 
 /**
  * Splits the owner role's free-text output into a description and a list
- * of acceptance criteria, per prompts/owner.md's requested shape: prose,
- * then a numbered list. Everything before the first list-like line is the
- * description; every subsequent matching line is one criterion.
+ * of acceptance criteria. prompts/owner.md asks for an explicit `Acceptance
+ * criteria:` header line (same contract as AC_HEADER/parsePlannerOutput
+ * below) so the split is a literal header lookup, not a guess at where a
+ * list "starts" — the description itself often contains its own list-like
+ * lines (e.g. "supports: 1. X 2. Y"), which made an earlier heuristic-only
+ * version of this function truncate the description at its own first
+ * bullet. If the model ignores the header (local models don't always
+ * follow formatting instructions), fall back to treating the trailing
+ * contiguous run of list-item/blank lines as the AC block.
  */
 export function parseOwnerOutput(text: string): {
   description: string;
   acceptanceCriteria: string[];
 } {
   const lines = text.split("\n");
-  const acStart = lines.findIndex((l) => AC_LINE.test(l));
-  if (acStart === -1) {
+
+  const headerIdx = lines.findIndex((l) => AC_HEADER.test(l));
+  if (headerIdx !== -1) {
+    const description = lines.slice(0, headerIdx).join("\n").trim();
+    const acceptanceCriteria = lines
+      .slice(headerIdx + 1)
+      .map((l) => l.match(AC_LINE)?.[1]?.trim())
+      .filter((s): s is string => Boolean(s));
+    return { description, acceptanceCriteria };
+  }
+
+  let end = lines.length;
+  while (end > 0 && lines[end - 1]!.trim() === "") end--;
+
+  let start = end;
+  while (start > 0 && (lines[start - 1]!.trim() === "" || AC_LINE.test(lines[start - 1]!))) start--;
+
+  const block = lines.slice(start, end);
+  if (!block.some((l) => AC_LINE.test(l))) {
     return { description: text.trim(), acceptanceCriteria: [] };
   }
-  const description = lines.slice(0, acStart).join("\n").trim();
-  const acceptanceCriteria = lines
-    .slice(acStart)
+  const description = lines.slice(0, start).join("\n").trim();
+  const acceptanceCriteria = block
     .map((l) => l.match(AC_LINE)?.[1]?.trim())
     .filter((s): s is string => Boolean(s));
   return { description, acceptanceCriteria };
