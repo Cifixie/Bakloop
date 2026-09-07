@@ -28,6 +28,21 @@ async function main() {
   const { loadLog, saveLog } = createLogStore(stateDir(project));
   const gateConfigPath = join(stateDir(project), "gates.json");
 
+  // Ctrl+C (or a `kill`) sets this instead of tearing the process down mid-tick:
+  // the in-flight tick finishes — commits, gate results, and attempt log all
+  // land — and the loop exits cleanly on the next iteration boundary.
+  let stopRequested = false;
+  const requestStop = () => {
+    if (stopRequested) {
+      // Already asked once and it's still running a tick — a second signal means "now".
+      process.exit(130);
+    }
+    stopRequested = true;
+    console.info("[main] stopping after the current tick finishes (press again to force-quit)");
+  };
+  process.on("SIGINT", requestStop);
+  process.on("SIGTERM", requestStop);
+
   try {
     for (;;) {
       const result = await tick({
@@ -42,9 +57,11 @@ async function main() {
         renderPrompt,
       });
       console.info(`[main] ${result.note}`);
-      if (result.done) break;
+      if (result.done || stopRequested) break;
     }
   } finally {
+    process.off("SIGINT", requestStop);
+    process.off("SIGTERM", requestStop);
     // Leave the working tree on the base branch, not mid-task, between runs.
     await run("git", ["checkout", baseBranch], { cwd: repoCwd }).catch(() => {});
   }
