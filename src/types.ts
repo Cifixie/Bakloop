@@ -56,10 +56,16 @@ export interface TaskViewResponse {
 
 /** Pipeline statuses. Must match backlog/config.yml statuses. */
 export const STATUS = {
-  todo: "To Do",
+  /** Raw wishlist: unrefined, or refined but no plan yet. Owner/architect/researcher/planner work here. */
+  backlog: "Backlog",
+  /** Spec + plan complete; parked until a human adds the `approved` label. */
+  waitingForApproval: "Waiting for Approval",
+  /** Executor actively running the gate loop. At most one per project. */
   inProgress: "In Progress",
+  /** A PR is open. Human-owned from here — the agent never touches it again. */
   review: "Review",
   blocked: "Blocked",
+  /** PR approved and merged. Only ever set by a human (or a future GitHub sync), never the agent. */
   done: "Done",
 } as const;
 

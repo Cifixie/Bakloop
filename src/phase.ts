@@ -8,14 +8,17 @@ export interface Phase {
 
 const blank = (s: string | null): boolean => s === null || s.trim() === "";
 
+/** A human adds this once they've reviewed a Waiting-for-Approval task's plan and AC — the only way execution can start. */
+export const APPROVED_LABEL = "approved";
+
 /**
  * Routing is DERIVED from which fields are empty. It is never chosen by
  * a model: it is the one decision with no verification signal, so a bad
  * choice corrupts the loop silently instead of failing a task loudly.
  */
 export function resolvePhase(task: Task, attempts: number): Phase | null {
-  if (task.status === STATUS.done || task.status === STATUS.blocked) {
-    return null;
+  if (task.status === STATUS.done || task.status === STATUS.blocked || task.status === STATUS.review) {
+    return null; // terminal, or human-owned — the agent never touches these again
   }
 
   if (task.readiness.isBlocked) {
@@ -38,6 +41,15 @@ export function resolvePhase(task: Task, attempts: number): Phase | null {
 
   if (blank(task.implementationPlan)) {
     return { role: "planner", reason: "no implementation plan" };
+  }
+
+  // Spec + plan complete: this task is Waiting for Approval. Execution
+  // never STARTS on field state alone — a human must approve it first.
+  // Once it's already In Progress, later ticks (retries, senior escalation,
+  // the reviewer pass) proceed regardless — the gate is a start-up check,
+  // not something re-enforced on every tick of an execution in flight.
+  if (task.status !== STATUS.inProgress && !task.labels.includes(APPROVED_LABEL)) {
+    return null;
   }
 
   // Senior is gated behind repeated machine failure, not opinion.

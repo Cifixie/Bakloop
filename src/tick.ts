@@ -1,7 +1,7 @@
 import { Backlog } from "./backlog.js";
 import { ensureTaskBranch } from "./branch.js";
 import { captureBaseline, isStuck, loadGateConfig, runGates, type Baseline } from "./gates.js";
-import { resolvePhase, selectTask } from "./phase.js";
+import { APPROVED_LABEL, resolvePhase, selectTask } from "./phase.js";
 import { parseOwnerOutput } from "./spec.js";
 import { ROLE_TOOLS, STATUS, type Role, type Task } from "./types.js";
 
@@ -54,8 +54,17 @@ export async function tick(opts: {
     );
   }
 
-  const candidates =
-    inProgress.length === 1 ? inProgress : await backlog.list(STATUS.todo, project);
+  // Approved execution work always comes first; backlog spec/plan work is
+  // filler that keeps the Waiting-for-Approval queue stocked whenever
+  // there's nothing greenlit to actually build yet.
+  let candidates: Awaited<ReturnType<Backlog["list"]>>;
+  if (inProgress.length === 1) {
+    candidates = inProgress;
+  } else {
+    const rfi = await backlog.list(STATUS.waitingForApproval, project);
+    const approved = rfi.filter((t) => t.labels.includes(APPROVED_LABEL));
+    candidates = approved.length > 0 ? approved : await backlog.list(STATUS.backlog, project);
+  }
   const picked = selectTask(candidates);
   if (!picked) return { done: true, note: "no ready tasks" };
 
@@ -72,11 +81,13 @@ export async function tick(opts: {
     `[tick] ${task.id} role=${phase.role} attempt=${log.attempts} — ${phase.reason}`,
   );
 
-  if (task.status === STATUS.todo) {
+  const isExecutor = phase.role === "executor";
+  if (isExecutor && task.status !== STATUS.inProgress) {
+    // The one and only promotion out of Waiting for Approval — gated
+    // by resolvePhase already having required the approved label.
     await backlog.setStatus(task.id, STATUS.inProgress);
   }
 
-  const isExecutor = phase.role === "executor";
   const gateConfig = isExecutor ? await loadGateConfig(repoCwd, gateConfigPath) : null;
   let base: Baseline | null = null;
   if (isExecutor) base = await captureBaseline(repoCwd, baseBranch, gateConfig!);
@@ -94,16 +105,20 @@ export async function tick(opts: {
   switch (phase.role) {
     case "planner":
       await backlog.setPlan(task.id, result.text);
-      return { done: false, note: "plan written" };
+      // Spec + plan complete: parked here until a human adds the approved label.
+      await backlog.setStatus(task.id, STATUS.waitingForApproval);
+      return { done: false, note: "plan written — waiting for approval" };
     case "architect":
     case "researcher":
     case "senior":
       await backlog.appendNotes(task.id, `**${phase.role}:** ${result.text}`);
       return { done: false, note: `${phase.role} notes appended` };
     case "reviewer":
+      // Not Done: a human still has to open, review, and merge the PR.
+      // Done is a fact only they (or a future GitHub sync) can assert.
       await backlog.setFinalSummary(task.id, result.text);
-      await backlog.setStatus(task.id, STATUS.done);
-      return { done: false, note: "reviewed and closed" };
+      await backlog.setStatus(task.id, STATUS.review);
+      return { done: false, note: "reviewed — awaiting human PR review" };
     case "owner": {
       const { description, acceptanceCriteria } = parseOwnerOutput(result.text);
       await backlog.setDescription(task.id, description);
@@ -128,11 +143,12 @@ export async function tick(opts: {
   if (gates.ok) {
     // Gates are the only verdict that counts, so a green run is treated as
     // every criterion being met — without this, acDone in phase.ts never
-    // becomes true and the task can never reach the reviewer phase.
+    // becomes true and the task can never reach the reviewer phase. Status
+    // stays In Progress: the reviewer phase (next tick) is what moves it
+    // to Review, once it has actually written a summary.
     for (const ac of task.acceptanceCriteria) {
       if (!ac.checked) await backlog.checkAc(task.id, ac.index);
     }
-    await backlog.setStatus(task.id, STATUS.review);
     return { done: false, note: "gates green" };
   }
 
