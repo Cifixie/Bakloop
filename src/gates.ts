@@ -83,9 +83,14 @@ export async function loadGateConfig(cwd: string, cachePath: string): Promise<Ga
   }
 }
 
-export async function captureBaseline(cwd: string, config: GateConfig): Promise<Baseline> {
+/** Cumulative diff for this task's branch: everything committed since it forked, `A...B` diffs against the merge-base automatically. */
+async function branchDiff(cwd: string, baseBranch: string) {
+  return tryRun("git", ["diff", `${baseBranch}...HEAD`], cwd);
+}
+
+export async function captureBaseline(cwd: string, baseBranch: string, config: GateConfig): Promise<Baseline> {
   const tests = config.vitest ? await tryRun("npx", ["vitest", "run"], cwd) : SKIPPED;
-  const diff = await tryRun("git", ["diff", "HEAD"], cwd);
+  const diff = await branchDiff(cwd, baseBranch);
   return {
     testsPassing: countPassing(tests.out),
     diffHash: createHash("sha1").update(diff.out).digest("hex").slice(0, 12),
@@ -113,16 +118,21 @@ function countPassing(out: string): number {
  * and is not read anywhere: an overly positive report is harmless if
  * nothing parses it.
  */
-export async function runGates(cwd: string, base: Baseline, config: GateConfig): Promise<GateResult> {
+export async function runGates(cwd: string, base: Baseline, config: GateConfig, baseBranch: string): Promise<GateResult> {
   const failures: string[] = [];
 
-  const diff = await tryRun("git", ["diff", "HEAD"], cwd);
+  // The executor is expected to commit its own work now (see prompts/executor.md);
+  // a dirty tree means it either forgot or is still mid-edit, either way not done.
+  const status = await tryRun("git", ["status", "--porcelain"], cwd);
+  if (status.out.trim() !== "") failures.push("uncommitted-changes");
+
+  const diff = await branchDiff(cwd, baseBranch);
   const diffHash = createHash("sha1").update(diff.out).digest("hex").slice(0, 12);
 
-  // Highest-value single check: claimed done, changed nothing.
+  // Highest-value single check: claimed done, changed nothing since this branch forked.
   if (diff.out.trim() === "") failures.push("empty-diff");
 
-  // Cycling rather than progressing.
+  // Cycling rather than progressing: no new commits since this attempt started.
   if (diffHash === base.diffHash && diff.out.trim() !== "") {
     failures.push("diff-unchanged-since-last-attempt");
   }

@@ -1,12 +1,18 @@
+import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { backlogDir, loadProjects, saveProjects } from "./config.js";
+
+const run = promisify(execFile);
 
 /**
  * `tsx src/register-project.ts <key> [path]` — maps a project lane to a
- * repo path in the shared registry, and best-effort mirrors it into
- * backlog.md's own `projects` list (which the tool itself requires you to
- * edit directly; there is no `backlog config set` for it).
+ * repo path in the shared registry, records whatever branch is currently
+ * checked out there as the base every task branch forks from and is
+ * diffed against, and best-effort mirrors the key into backlog.md's own
+ * `projects` list (which the tool itself requires you to edit directly;
+ * there is no `backlog config set` for it).
  */
 async function main() {
   const [key, pathArg] = process.argv.slice(2);
@@ -16,11 +22,13 @@ async function main() {
     return;
   }
   const repoPath = resolve(pathArg ?? process.cwd());
+  const { stdout } = await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repoPath });
+  const baseBranch = stdout.trim();
 
   const projects = await loadProjects();
-  projects[key] = repoPath;
+  projects[key] = { path: repoPath, baseBranch };
   await saveProjects(projects);
-  console.info(`Registered "${key}" -> ${repoPath}`);
+  console.info(`Registered "${key}" -> ${repoPath} (base branch: ${baseBranch})`);
 
   const configPath = join(backlogDir(), "config.yml");
   try {

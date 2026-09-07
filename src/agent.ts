@@ -36,7 +36,7 @@ export const runAgent: RunAgent = async (input) => {
 
   const agent = new Agent({
     initialState: {
-      systemPrompt: `You are the ${input.role} in an automated task pipeline. Follow the instructions in the user message exactly; you will not get a chance to ask clarifying questions.`,
+      systemPrompt: `You are the ${input.role} in an automated task pipeline. Your working directory is ${input.cwd} — every relative path in every tool is resolved against exactly that directory, and it already contains the checked-out repo; never explore outside it (no scanning "/", home, or other repos). Follow the instructions in the user message exactly; you will not get a chance to ask clarifying questions.`,
       model,
       tools: buildTools(input.tools as readonly ToolName[], input.cwd),
     },
@@ -44,25 +44,46 @@ export const runAgent: RunAgent = async (input) => {
   });
 
   // Ticks run for minutes against a local model with nothing else to show
-  // for it; stream the model's own reasoning/text/tool-call deltas live
-  // instead of leaving the terminal silent between tick log lines.
+  // for it; a progress line proves it's alive without dumping the raw
+  // reasoning stream, and the reply is printed once, complete, at the end.
+  let chars = 0;
+  let started = 0;
+  let lastPrint = 0;
+  const progress = (label: string) => {
+    if (Date.now() - lastPrint < 2000) return;
+    lastPrint = Date.now();
+    const secs = ((Date.now() - started) / 1000).toFixed(0);
+    process.stdout.write(`\r[${input.role}] ${label}... ${secs}s, ${chars} chars   `);
+  };
+
   const unsubscribe = agent.subscribe((event) => {
     if (event.type === "message_update") {
       const e = event.assistantMessageEvent;
       switch (e.type) {
         case "thinking_start":
-          process.stdout.write(`\n[${input.role}] thinking> `);
+          chars = 0;
+          started = Date.now();
+          lastPrint = 0;
+          process.stdout.write(`[${input.role}] thinking...`);
           break;
         case "thinking_delta":
-        case "text_delta":
-          process.stdout.write(e.delta);
-          break;
-        case "text_start":
-          process.stdout.write(`\n[${input.role}] reply> `);
+          chars += e.delta.length;
+          progress("thinking");
           break;
         case "thinking_end":
+          process.stdout.write(`\r[${input.role}] thought for ${((Date.now() - started) / 1000).toFixed(0)}s (${chars} chars)\n`);
+          break;
+        case "text_start":
+          chars = 0;
+          started = Date.now();
+          lastPrint = 0;
+          break;
+        case "text_delta":
+          chars += e.delta.length;
+          progress("replying");
+          break;
         case "text_end":
-          process.stdout.write("\n");
+          process.stdout.write(`\r[${input.role}] reply:\n${e.content}\n`);
           break;
       }
     } else if (event.type === "tool_execution_start") {

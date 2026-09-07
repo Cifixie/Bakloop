@@ -22,9 +22,9 @@ export function createReadTool(cwd: string): AgentTool {
   return {
     name: "read",
     label: "Read",
-    description: "Read the contents of a text file.",
+    description: `Read the contents of a text file. Relative paths resolve against ${cwd} — that is the repo root; do not read outside it.`,
     parameters: Type.Object({
-      path: Type.String({ description: "Path to the file, relative to the repo root" }),
+      path: Type.String({ description: `Path to the file, relative to ${cwd}` }),
     }),
     execute: async (_toolCallId, params) => {
       const path = (params as { path: string }).path;
@@ -38,10 +38,9 @@ export function createWriteTool(cwd: string): AgentTool {
   return {
     name: "write",
     label: "Write",
-    description:
-      "Write content to a file, creating it if missing and overwriting it if present. Creates parent directories as needed.",
+    description: `Write content to a file, creating it if missing and overwriting it if present. Creates parent directories as needed. Relative paths resolve against ${cwd} — that is the repo root; do not write outside it.`,
     parameters: Type.Object({
-      path: Type.String({ description: "Path to the file, relative to the repo root" }),
+      path: Type.String({ description: `Path to the file, relative to ${cwd}` }),
       content: Type.String({ description: "Full content to write" }),
     }),
     execute: async (_toolCallId, params) => {
@@ -58,10 +57,9 @@ export function createEditTool(cwd: string): AgentTool {
   return {
     name: "edit",
     label: "Edit",
-    description:
-      "Replace one exact occurrence of text in a file. oldText must match uniquely and exactly, including whitespace.",
+    description: `Replace one exact occurrence of text in a file. oldText must match uniquely and exactly, including whitespace. Relative paths resolve against ${cwd} — that is the repo root; do not edit outside it.`,
     parameters: Type.Object({
-      path: Type.String({ description: "Path to the file, relative to the repo root" }),
+      path: Type.String({ description: `Path to the file, relative to ${cwd}` }),
       oldText: Type.String({ description: "Exact text to replace; must be unique in the file" }),
       newText: Type.String({ description: "Replacement text" }),
     }),
@@ -83,7 +81,7 @@ export function createBashTool(cwd: string): AgentTool {
   return {
     name: "bash",
     label: "Bash",
-    description: "Run a bash command in the repo root and return combined stdout/stderr.",
+    description: `Run a bash command with cwd ${cwd} — that is the repo root, already checked out and ready to work in. Never cd out of it or scan other directories (e.g. "/", $HOME). Returns combined stdout/stderr.`,
     parameters: Type.Object({
       command: Type.String({ description: "Shell command to execute" }),
     }),

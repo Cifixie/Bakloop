@@ -1,4 +1,5 @@
 import { Backlog } from "./backlog.js";
+import { ensureTaskBranch } from "./branch.js";
 import { captureBaseline, isStuck, loadGateConfig, runGates, type Baseline } from "./gates.js";
 import { resolvePhase, selectTask } from "./phase.js";
 import { parseOwnerOutput } from "./spec.js";
@@ -33,6 +34,8 @@ export async function tick(opts: {
   repoCwd: string;
   /** Which lane of the shared backlog this loop is allowed to touch. */
   project: string;
+  /** Branch each task's own branch forks from, and is diffed against for gates. */
+  baseBranch: string;
   /** Where the detected-once gate config (tsc/biome/vitest presence) is cached for this project. */
   gateConfigPath: string;
   runAgent: RunAgent;
@@ -40,7 +43,7 @@ export async function tick(opts: {
   saveLog: (log: AttemptLog) => Promise<void>;
   renderPrompt: (role: Role, task: Task) => string;
 }): Promise<{ done: boolean; note: string }> {
-  const { backlog, repoCwd, project, gateConfigPath, runAgent, loadLog, saveLog, renderPrompt } = opts;
+  const { backlog, repoCwd, project, baseBranch, gateConfigPath, runAgent, loadLog, saveLog, renderPrompt } = opts;
 
   // Hard invariant, scoped to this project. If this ever trips, stop and report — do not continue.
   const inProgress = await backlog.list(STATUS.inProgress, project);
@@ -57,6 +60,10 @@ export async function tick(opts: {
   if (!picked) return { done: true, note: "no ready tasks" };
 
   const task = await backlog.view(picked.id);
+  // Every task gets its own branch: isolates a bad attempt from the next
+  // task and gives the human a set of branches to review, not one shared
+  // working tree of commingled changes.
+  await ensureTaskBranch(repoCwd, baseBranch, task.id);
   const log = await loadLog(task.id);
   const phase = resolvePhase(task, log.attempts);
   if (!phase) return { done: false, note: `${task.id}: nothing to do` };
@@ -72,7 +79,7 @@ export async function tick(opts: {
   const isExecutor = phase.role === "executor";
   const gateConfig = isExecutor ? await loadGateConfig(repoCwd, gateConfigPath) : null;
   let base: Baseline | null = null;
-  if (isExecutor) base = await captureBaseline(repoCwd, gateConfig!);
+  if (isExecutor) base = await captureBaseline(repoCwd, baseBranch, gateConfig!);
 
   const result = await runAgent({
     role: phase.role,
@@ -113,7 +120,7 @@ export async function tick(opts: {
   }
 
   // Executor: verdict comes from the machine, never from result.text.
-  const gates = await runGates(repoCwd, base!, gateConfig!);
+  const gates = await runGates(repoCwd, base!, gateConfig!, baseBranch);
   log.attempts += 1;
   log.signatures.push(gates.signature);
   await saveLog(log);
@@ -135,7 +142,8 @@ export async function tick(opts: {
   );
 
   if (log.attempts >= MAX_ATTEMPTS || isStuck(log.signatures)) {
-    // Revert wholesale so a bad tick cannot contaminate the next task.
+    // Nothing to revert: the failed attempts are commits on this task's
+    // own branch, left in place for a human to inspect.
     await backlog.setStatus(task.id, STATUS.blocked);
     return {
       done: false,
