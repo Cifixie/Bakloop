@@ -12,7 +12,9 @@ const run = promisify(execFile);
  * checked out there as the base every task branch forks from and is
  * diffed against, and best-effort mirrors the key into backlog.md's own
  * `projects` list (which the tool itself requires you to edit directly;
- * there is no `backlog config set` for it).
+ * there is no `backlog config set` for it). A fresh store's config.yml has
+ * no `projects:` line at all — backlog.md omits it rather than writing
+ * `projects: []` — so this appends one rather than assuming it exists.
  */
 async function main() {
   const [key, pathArg] = process.argv.slice(2);
@@ -36,10 +38,9 @@ async function main() {
     const match = raw.match(/^projects:\s*\[(.*)\]\s*$/m);
     const inner = match?.[1];
     if (inner === undefined) {
-      console.warn(
-        `Could not find a "projects: [...]" line in ${configPath}. ` +
-          `Add "${key}" to it by hand.`,
-      );
+      const newLine = `projects: ["${key}"]`;
+      await writeFile(configPath, `${raw.replace(/\n$/, "")}\n${newLine}\n`, "utf-8");
+      console.info(`Added "${key}" to a new "projects:" line in ${configPath}`);
       return;
     }
     const existing = inner
@@ -53,7 +54,7 @@ async function main() {
     console.info(`Added "${key}" to ${configPath}`);
   } catch {
     console.warn(
-      `No backlog config found at ${configPath}. Run "backlog init" in ${backlogDir()} first, ` +
+      `No backlog config found at ${configPath}. Run "npm run setup" first, ` +
         `then add "${key}" to its projects list.`,
     );
   }

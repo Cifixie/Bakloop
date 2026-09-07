@@ -14,7 +14,14 @@ without the interactive wizard) then runs `backlog init` and rewrites `config.ym
 only re-applies the status fix-up. Gotcha worth knowing if you touch this again: `backlog
 init` creates its own `backlog/` subdir under whatever cwd it's given, so it must run
 from `bakloopHome()`, one level above `backlogDir()` — running it from `backlogDir()`
-itself nests a second `backlog/` inside it. Before that: `pnpm start <key>` accepts the project
+itself nests a second `backlog/` inside it.
+
+`register-project.ts` now also handles a fresh store correctly: backlog.md omits the
+`projects:` key entirely from `config.yml` when the list is empty (it doesn't write
+`projects: []`), so the script used to only warn and leave the project unregistered in
+backlog.md's own config on a brand-new store. It now appends a new `projects: [...]`
+line when the key is missing, in addition to the existing append-to-array path when it's
+already there. Before that: `pnpm start <key>` accepts the project
 key as an argv fallback (`BAKLOOP_PROJECT` env still wins if set — `src/main.ts`), and a
 two-step manual-task path — `pnpm run new-draft <key>` (`src/create-draft.ts`) captures a
 copy-pasted ticket (roadmap entry, GitHub issue) as a Backlog.md *draft*, tagged for a
