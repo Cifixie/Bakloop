@@ -1,0 +1,143 @@
+import { execFile } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { promisify } from "node:util";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "typebox";
+import type { ToolName } from "./types.js";
+
+const run = promisify(execFile);
+
+/**
+ * Plain AgentTool implementations, kept independent of pi's harness tool
+ * types: those are wired to Context/ExecutionEnv from the full harness
+ * runtime, which this orchestrator deliberately does not use (one model
+ * call per tick, no session/compaction machinery).
+ */
+function resolveInCwd(cwd: string, path: string): string {
+  return isAbsolute(path) ? path : resolve(cwd, path);
+}
+
+export function createReadTool(cwd: string): AgentTool {
+  return {
+    name: "read",
+    label: "Read",
+    description: "Read the contents of a text file.",
+    parameters: Type.Object({
+      path: Type.String({ description: "Path to the file, relative to the repo root" }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const path = (params as { path: string }).path;
+      const content = await readFile(resolveInCwd(cwd, path), "utf-8");
+      return { content: [{ type: "text", text: content }], details: { path } };
+    },
+  };
+}
+
+export function createWriteTool(cwd: string): AgentTool {
+  return {
+    name: "write",
+    label: "Write",
+    description:
+      "Write content to a file, creating it if missing and overwriting it if present. Creates parent directories as needed.",
+    parameters: Type.Object({
+      path: Type.String({ description: "Path to the file, relative to the repo root" }),
+      content: Type.String({ description: "Full content to write" }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { path, content } = params as { path: string; content: string };
+      const absolute = resolveInCwd(cwd, path);
+      await mkdir(dirname(absolute), { recursive: true });
+      await writeFile(absolute, content, "utf-8");
+      return { content: [{ type: "text", text: `Wrote ${path}` }], details: { path } };
+    },
+  };
+}
+
+export function createEditTool(cwd: string): AgentTool {
+  return {
+    name: "edit",
+    label: "Edit",
+    description:
+      "Replace one exact occurrence of text in a file. oldText must match uniquely and exactly, including whitespace.",
+    parameters: Type.Object({
+      path: Type.String({ description: "Path to the file, relative to the repo root" }),
+      oldText: Type.String({ description: "Exact text to replace; must be unique in the file" }),
+      newText: Type.String({ description: "Replacement text" }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const { path, oldText, newText } = params as { path: string; oldText: string; newText: string };
+      const absolute = resolveInCwd(cwd, path);
+      const original = await readFile(absolute, "utf-8");
+      const occurrences = original.split(oldText).length - 1;
+      if (occurrences === 0) throw new Error(`oldText not found in ${path}`);
+      if (occurrences > 1) throw new Error(`oldText matches ${occurrences} times in ${path}; must be unique`);
+      const updated = original.replace(oldText, newText);
+      await writeFile(absolute, updated, "utf-8");
+      return { content: [{ type: "text", text: `Edited ${path}` }], details: { path } };
+    },
+  };
+}
+
+export function createBashTool(cwd: string): AgentTool {
+  return {
+    name: "bash",
+    label: "Bash",
+    description: "Run a bash command in the repo root and return combined stdout/stderr.",
+    parameters: Type.Object({
+      command: Type.String({ description: "Shell command to execute" }),
+    }),
+    execute: async (_toolCallId, params, signal) => {
+      const { command } = params as { command: string };
+      try {
+        const { stdout, stderr } = await run("/bin/bash", ["-c", command], {
+          cwd,
+          signal,
+          maxBuffer: 16 * 1024 * 1024,
+        });
+        return { content: [{ type: "text", text: stdout + stderr }], details: { command } };
+      } catch (e) {
+        const err = e as { stdout?: string; stderr?: string; code?: number };
+        const out = (err.stdout ?? "") + (err.stderr ?? "");
+        return {
+          content: [{ type: "text", text: `${out}\n(exit code ${err.code ?? "unknown"})` }],
+          details: { command },
+        };
+      }
+    },
+  };
+}
+
+export function createFetchTool(): AgentTool {
+  return {
+    name: "fetch",
+    label: "Fetch",
+    description: "Fetch a URL over HTTP(S) and return its body as text, truncated to 50KB.",
+    parameters: Type.Object({
+      url: Type.String({ description: "URL to fetch" }),
+    }),
+    execute: async (_toolCallId, params, signal) => {
+      const { url } = params as { url: string };
+      const res = await fetch(url, { signal });
+      const text = await res.text();
+      const truncated = text.length > 50_000 ? `${text.slice(0, 50_000)}\n... [truncated]` : text;
+      return {
+        content: [{ type: "text", text: `HTTP ${res.status}\n${truncated}` }],
+        details: { url, status: res.status },
+      };
+    },
+  };
+}
+
+const TOOL_FACTORIES: Record<ToolName, (cwd: string) => AgentTool> = {
+  read: createReadTool,
+  write: createWriteTool,
+  edit: createEditTool,
+  bash: createBashTool,
+  fetch: createFetchTool,
+};
+
+/** Builds the concrete tool set for a role's allowlist. Nothing outside this list is ever handed to the model. */
+export function buildTools(names: readonly ToolName[], cwd: string): AgentTool[] {
+  return names.map((name) => TOOL_FACTORIES[name](cwd));
+}

@@ -30,24 +30,26 @@ const MAX_ATTEMPTS = 4;
 export async function tick(opts: {
   backlog: Backlog;
   repoCwd: string;
+  /** Which lane of the shared backlog this loop is allowed to touch. */
+  project: string;
   runAgent: RunAgent;
   loadLog: (taskId: string) => Promise<AttemptLog>;
   saveLog: (log: AttemptLog) => Promise<void>;
   renderPrompt: (role: Role, task: Task) => string;
 }): Promise<{ done: boolean; note: string }> {
-  const { backlog, repoCwd, runAgent, loadLog, saveLog, renderPrompt } = opts;
+  const { backlog, repoCwd, project, runAgent, loadLog, saveLog, renderPrompt } = opts;
 
-  // Hard invariant. If this ever trips, stop and report — do not continue.
-  const inProgress = await backlog.list(STATUS.inProgress);
+  // Hard invariant, scoped to this project. If this ever trips, stop and report — do not continue.
+  const inProgress = await backlog.list(STATUS.inProgress, project);
   if (inProgress.length > 1) {
     throw new Error(
-      `Invariant violated: ${inProgress.length} tasks In Progress ` +
+      `Invariant violated: ${inProgress.length} tasks In Progress in project "${project}" ` +
         `(${inProgress.map((t) => t.id).join(", ")}). Agents must run sequentially.`,
     );
   }
 
   const candidates =
-    inProgress.length === 1 ? inProgress : await backlog.list(STATUS.todo);
+    inProgress.length === 1 ? inProgress : await backlog.list(STATUS.todo, project);
   const picked = selectTask(candidates);
   if (!picked) return { done: true, note: "no ready tasks" };
 

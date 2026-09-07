@@ -52,6 +52,9 @@ Thumbs.db
 .vercel/
 .turbo/
 
+# Orchestrator derived state
+.orc/
+
 # Misc
 *.pid
 *.seed

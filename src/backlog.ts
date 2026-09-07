@@ -16,6 +16,9 @@ const run = promisify(execFile);
  * The model is never given these as tools. The orchestrator does all
  * bookkeeping deterministically, so a tick's context holds one task's
  * text and nothing else.
+ *
+ * `cwd` is the shared backlog store (see config.ts), never a target
+ * repo — task writes must never show up in a project's own git diff.
  */
 export class Backlog {
   constructor(private readonly cwd: string) {}
@@ -40,9 +43,11 @@ export class Backlog {
     return parsed;
   }
 
-  async list(status?: string): Promise<TaskSummary[]> {
+  /** `project` scopes every query to one lane — a loop must never see another project's tasks. */
+  async list(status?: string, project?: string): Promise<TaskSummary[]> {
     const args = ["task", "list"];
     if (status) args.push("-s", status);
+    if (project) args.push("--project", project);
     const res = await this.json<TaskListResponse>(args);
     return res.tasks;
   }
