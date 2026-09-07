@@ -43,7 +43,40 @@ export const runAgent: RunAgent = async (input) => {
     streamFn: models.streamSimple.bind(models),
   });
 
-  await agent.prompt(input.prompt);
+  // Ticks run for minutes against a local model with nothing else to show
+  // for it; stream the model's own reasoning/text/tool-call deltas live
+  // instead of leaving the terminal silent between tick log lines.
+  const unsubscribe = agent.subscribe((event) => {
+    if (event.type === "message_update") {
+      const e = event.assistantMessageEvent;
+      switch (e.type) {
+        case "thinking_start":
+          process.stdout.write(`\n[${input.role}] thinking> `);
+          break;
+        case "thinking_delta":
+        case "text_delta":
+          process.stdout.write(e.delta);
+          break;
+        case "text_start":
+          process.stdout.write(`\n[${input.role}] reply> `);
+          break;
+        case "thinking_end":
+        case "text_end":
+          process.stdout.write("\n");
+          break;
+      }
+    } else if (event.type === "tool_execution_start") {
+      console.info(`[${input.role}] tool ${event.toolName} ${JSON.stringify(event.args)}`);
+    } else if (event.type === "tool_execution_end") {
+      console.info(`[${input.role}] tool ${event.toolName} ${event.isError ? "failed" : "done"}`);
+    }
+  });
+
+  try {
+    await agent.prompt(input.prompt);
+  } finally {
+    unsubscribe();
+  }
 
   const lastAssistant = [...agent.state.messages]
     .reverse()
@@ -52,6 +85,12 @@ export const runAgent: RunAgent = async (input) => {
     throw new Error(
       `${input.role}: agent produced no assistant response (error: ${agent.state.errorMessage ?? "none"})`,
     );
+  }
+
+  // A provider/transport failure still yields a message with role "assistant"
+  // (just empty content) — that must not read as a legitimate empty reply.
+  if (lastAssistant.stopReason === "error") {
+    throw new Error(`${input.role}: model call failed: ${lastAssistant.errorMessage ?? "unknown error"}`);
   }
 
   const text = lastAssistant.content

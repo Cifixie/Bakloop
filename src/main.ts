@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { runAgent } from "./agent.js";
 import { Backlog } from "./backlog.js";
 import { backlogDir, loadProjects, resolveProjectKey, stateDir } from "./config.js";
@@ -19,9 +20,19 @@ async function main() {
 
   const backlog = new Backlog(backlogDir());
   const { loadLog, saveLog } = createLogStore(stateDir(project));
+  const gateConfigPath = join(stateDir(project), "gates.json");
 
   for (;;) {
-    const result = await tick({ backlog, repoCwd, project, runAgent, loadLog, saveLog, renderPrompt });
+    const result = await tick({
+      backlog,
+      repoCwd,
+      project,
+      gateConfigPath,
+      runAgent,
+      loadLog,
+      saveLog,
+      renderPrompt,
+    });
     console.info(`[main] ${result.note}`);
     if (result.done) break;
   }

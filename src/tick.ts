@@ -1,6 +1,7 @@
 import { Backlog } from "./backlog.js";
-import { captureBaseline, isStuck, runGates, type Baseline } from "./gates.js";
+import { captureBaseline, isStuck, loadGateConfig, runGates, type Baseline } from "./gates.js";
 import { resolvePhase, selectTask } from "./phase.js";
+import { parseOwnerOutput } from "./spec.js";
 import { ROLE_TOOLS, STATUS, type Role, type Task } from "./types.js";
 
 /** Attempt bookkeeping. Persisted to disk, not held in memory. */
@@ -32,12 +33,14 @@ export async function tick(opts: {
   repoCwd: string;
   /** Which lane of the shared backlog this loop is allowed to touch. */
   project: string;
+  /** Where the detected-once gate config (tsc/biome/vitest presence) is cached for this project. */
+  gateConfigPath: string;
   runAgent: RunAgent;
   loadLog: (taskId: string) => Promise<AttemptLog>;
   saveLog: (log: AttemptLog) => Promise<void>;
   renderPrompt: (role: Role, task: Task) => string;
 }): Promise<{ done: boolean; note: string }> {
-  const { backlog, repoCwd, project, runAgent, loadLog, saveLog, renderPrompt } = opts;
+  const { backlog, repoCwd, project, gateConfigPath, runAgent, loadLog, saveLog, renderPrompt } = opts;
 
   // Hard invariant, scoped to this project. If this ever trips, stop and report — do not continue.
   const inProgress = await backlog.list(STATUS.inProgress, project);
@@ -67,8 +70,9 @@ export async function tick(opts: {
   }
 
   const isExecutor = phase.role === "executor";
+  const gateConfig = isExecutor ? await loadGateConfig(repoCwd, gateConfigPath) : null;
   let base: Baseline | null = null;
-  if (isExecutor) base = await captureBaseline(repoCwd);
+  if (isExecutor) base = await captureBaseline(repoCwd, gateConfig!);
 
   const result = await runAgent({
     role: phase.role,
@@ -93,18 +97,34 @@ export async function tick(opts: {
       await backlog.setFinalSummary(task.id, result.text);
       await backlog.setStatus(task.id, STATUS.done);
       return { done: false, note: "reviewed and closed" };
-    case "owner":
-      await backlog.comment(task.id, "owner", result.text);
+    case "owner": {
+      const { description, acceptanceCriteria } = parseOwnerOutput(result.text);
+      await backlog.setDescription(task.id, description);
+      if (acceptanceCriteria.length === 0) {
+        // Nothing parseable: routing would just re-select owner forever on
+        // an empty AC list, so fail loudly instead of spinning silently.
+        throw new Error(
+          `${task.id}: owner output had no parseable acceptance criteria:\n${result.text}`,
+        );
+      }
+      await backlog.setAcceptanceCriteria(task.id, acceptanceCriteria);
       return { done: false, note: "owner refined spec" };
+    }
   }
 
   // Executor: verdict comes from the machine, never from result.text.
-  const gates = await runGates(repoCwd, base!);
+  const gates = await runGates(repoCwd, base!, gateConfig!);
   log.attempts += 1;
   log.signatures.push(gates.signature);
   await saveLog(log);
 
   if (gates.ok) {
+    // Gates are the only verdict that counts, so a green run is treated as
+    // every criterion being met — without this, acDone in phase.ts never
+    // becomes true and the task can never reach the reviewer phase.
+    for (const ac of task.acceptanceCriteria) {
+      if (!ac.checked) await backlog.checkAc(task.id, ac.index);
+    }
     await backlog.setStatus(task.id, STATUS.review);
     return { done: false, note: "gates green" };
   }

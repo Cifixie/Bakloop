@@ -1,5 +1,8 @@
+import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -18,6 +21,13 @@ export interface GateResult {
   testsPassing: number;
 }
 
+/** Which of bakloop's own checks this target repo's toolchain actually supports. */
+export interface GateConfig {
+  tsc: boolean;
+  biome: boolean;
+  vitest: boolean;
+}
+
 async function tryRun(cmd: string, args: string[], cwd: string) {
   try {
     const { stdout, stderr } = await run(cmd, args, { cwd, maxBuffer: 16 * 1024 * 1024 });
@@ -26,6 +36,60 @@ async function tryRun(cmd: string, args: string[], cwd: string) {
     const err = e as { code?: number; stdout?: string; stderr?: string };
     return { code: err.code ?? 1, out: (err.stdout ?? "") + (err.stderr ?? "") };
   }
+}
+
+const SKIPPED = { code: 0, out: "" };
+
+async function hasDependency(cwd: string, name: string): Promise<boolean> {
+  try {
+    const pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf-8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    return Boolean(pkg.dependencies?.[name] ?? pkg.devDependencies?.[name]);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Every registered project drives its own repo, which may not share
+ * bakloop's own toolchain — probe for what's actually there instead of
+ * assuming tsc/biome/vitest and failing every gate unconditionally.
+ */
+export async function detectGateConfig(cwd: string): Promise<GateConfig> {
+  const vitestConfig = ["vitest.config.ts", "vitest.config.js", "vitest.config.mts", "vitest.config.mjs"].some(
+    (f) => existsSync(join(cwd, f)),
+  );
+  return {
+    tsc: existsSync(join(cwd, "tsconfig.json")),
+    biome:
+      (await hasDependency(cwd, "@biomejs/biome")) ||
+      existsSync(join(cwd, "biome.json")) ||
+      existsSync(join(cwd, "biome.jsonc")),
+    vitest: (await hasDependency(cwd, "vitest")) || vitestConfig,
+  };
+}
+
+/** Detected once per project and cached to disk — not re-probed every tick. */
+export async function loadGateConfig(cwd: string, cachePath: string): Promise<GateConfig> {
+  try {
+    return JSON.parse(await readFile(cachePath, "utf-8")) as GateConfig;
+  } catch {
+    const detected = await detectGateConfig(cwd);
+    await mkdir(dirname(cachePath), { recursive: true });
+    await writeFile(cachePath, JSON.stringify(detected, null, 2), "utf-8");
+    return detected;
+  }
+}
+
+export async function captureBaseline(cwd: string, config: GateConfig): Promise<Baseline> {
+  const tests = config.vitest ? await tryRun("npx", ["vitest", "run"], cwd) : SKIPPED;
+  const diff = await tryRun("git", ["diff", "HEAD"], cwd);
+  return {
+    testsPassing: countPassing(tests.out),
+    diffHash: createHash("sha1").update(diff.out).digest("hex").slice(0, 12),
+  };
 }
 
 /** First compiler error, normalized so line numbers don't mask a repeat. */
@@ -44,21 +108,12 @@ function countPassing(out: string): number {
   return m ? Number(m[1]) : 0;
 }
 
-export async function captureBaseline(cwd: string): Promise<Baseline> {
-  const tests = await tryRun("npx", ["vitest", "run", "--reporter=basic"], cwd);
-  const diff = await tryRun("git", ["diff", "HEAD"], cwd);
-  return {
-    testsPassing: countPassing(tests.out),
-    diffHash: createHash("sha1").update(diff.out).digest("hex").slice(0, 12),
-  };
-}
-
 /**
  * Runs after every executor tick. The model's summary is not read here,
  * and is not read anywhere: an overly positive report is harmless if
  * nothing parses it.
  */
-export async function runGates(cwd: string, base: Baseline): Promise<GateResult> {
+export async function runGates(cwd: string, base: Baseline, config: GateConfig): Promise<GateResult> {
   const failures: string[] = [];
 
   const diff = await tryRun("git", ["diff", "HEAD"], cwd);
@@ -72,19 +127,19 @@ export async function runGates(cwd: string, base: Baseline): Promise<GateResult>
     failures.push("diff-unchanged-since-last-attempt");
   }
 
-  const tsc = await tryRun("npx", ["tsc", "--noEmit"], cwd);
-  if (tsc.code !== 0) failures.push("tsc");
+  const tsc = config.tsc ? await tryRun("npx", ["tsc", "--noEmit"], cwd) : SKIPPED;
+  if (config.tsc && tsc.code !== 0) failures.push("tsc");
 
-  const lint = await tryRun("npx", ["biome", "check", "."], cwd);
-  if (lint.code !== 0) failures.push("biome");
+  const lint = config.biome ? await tryRun("npx", ["biome", "check", "."], cwd) : SKIPPED;
+  if (config.biome && lint.code !== 0) failures.push("biome");
 
-  const tests = await tryRun("npx", ["vitest", "run", "--reporter=basic"], cwd);
-  const testsPassing = countPassing(tests.out);
-  if (tests.code !== 0) failures.push("vitest");
+  const tests = config.vitest ? await tryRun("npx", ["vitest", "run"], cwd) : SKIPPED;
+  const testsPassing = config.vitest ? countPassing(tests.out) : 0;
+  if (config.vitest && tests.code !== 0) failures.push("vitest");
 
   // Deleting or skipping a failing test is how a model makes the loop
   // go green. A drop in pass count is a failure, never a pass.
-  if (testsPassing < base.testsPassing) {
+  if (config.vitest && testsPassing < base.testsPassing) {
     failures.push(`test-count-regression ${base.testsPassing}->${testsPassing}`);
   }
 

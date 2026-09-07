@@ -61,6 +61,17 @@ export class Backlog {
     await this.cli(["task", "edit", id, "-s", status]);
   }
 
+  async setDescription(id: string, description: string): Promise<void> {
+    await this.cli(["task", "edit", id, "--description", description]);
+  }
+
+  /** Replaces the entire acceptance-criteria list — never a partial merge. */
+  async setAcceptanceCriteria(id: string, criteria: string[]): Promise<void> {
+    const args = ["task", "edit", id];
+    for (const c of criteria) args.push("--acceptance-criteria", c);
+    await this.cli(args);
+  }
+
   async setPlan(id: string, plan: string): Promise<void> {
     await this.cli(["task", "edit", id, "--plan", plan]);
   }
