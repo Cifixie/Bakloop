@@ -25,6 +25,17 @@ export function resolvePhase(task: Task, attempts: number): Phase | null {
     return null; // dependencies are the only ordering mechanism
   }
 
+  // Container task: the planner split it into subtasks sharing this task's
+  // branch. Implementation happens entirely in the children — this task's own
+  // owner/planner/executor phases are skipped for good. tick.ts only lets a
+  // task with subtasks reach here once every one of them is Done.
+  if (task.subtasks.length > 0) {
+    if (blank(task.finalSummary)) {
+      return { role: "reviewer", reason: "all subtasks complete, awaiting review" };
+    }
+    return null;
+  }
+
   if (blank(task.description) || task.acceptanceCriteria.length === 0) {
     return { role: "owner", reason: "no description or acceptance criteria" };
   }

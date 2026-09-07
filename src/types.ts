@@ -27,6 +27,8 @@ export interface TaskSummary {
   acceptanceCriteriaCompleted: number;
   acceptanceCriteriaCount: number;
   isReady: boolean;
+  /** Set when this task is a subtask created via `--parent`; null for a top-level or container task. */
+  parentTaskId: string | null;
 }
 
 export interface Task extends TaskSummary {
@@ -40,6 +42,8 @@ export interface Task extends TaskSummary {
   finalSummary: string | null;
   comments: unknown[];
   modifiedFiles: string[];
+  /** Non-empty once the planner has split this task; makes it a container, not an executable unit. */
+  subtasks: { id: string; title: string }[];
 }
 
 export interface TaskListResponse {

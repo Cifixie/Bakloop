@@ -2,8 +2,8 @@ import { Backlog } from "./backlog.js";
 import { ensureTaskBranch } from "./branch.js";
 import { captureBaseline, isStuck, loadGateConfig, runGates, type Baseline } from "./gates.js";
 import { APPROVED_LABEL, resolvePhase, selectTask } from "./phase.js";
-import { parseOwnerOutput } from "./spec.js";
-import { ROLE_TOOLS, STATUS, type Role, type Task } from "./types.js";
+import { parseOwnerOutput, parsePlannerOutput } from "./spec.js";
+import { ROLE_TOOLS, STATUS, type Role, type Task, type TaskSummary } from "./types.js";
 
 /** Attempt bookkeeping. Persisted to disk, not held in memory. */
 export interface AttemptLog {
@@ -23,6 +23,27 @@ export interface RunAgent {
 }
 
 const MAX_ATTEMPTS = 4;
+
+/** Ids of tasks that have at least one subtask, derived from a full project listing. */
+function containerIds(all: TaskSummary[]): Set<string> {
+  return new Set(all.filter((t) => t.parentTaskId).map((t) => t.parentTaskId!));
+}
+
+/**
+ * A container (has subtasks) is only a valid candidate once every subtask
+ * has reached Done — otherwise it would out-rank its own children (lower
+ * ordinal, created first) on every tick and starve them forever.
+ */
+function excludeInFlightContainers(
+  tasks: TaskSummary[],
+  containers: Set<string>,
+  all: TaskSummary[],
+): TaskSummary[] {
+  return tasks.filter((t) => {
+    if (!containers.has(t.id)) return true;
+    return all.filter((c) => c.parentTaskId === t.id).every((c) => c.status === STATUS.done);
+  });
+}
 
 /**
  * One tick = one model call. No parallelism, no sub-agents, nothing held
@@ -45,8 +66,11 @@ export async function tick(opts: {
 }): Promise<{ done: boolean; note: string }> {
   const { backlog, repoCwd, project, baseBranch, gateConfigPath, runAgent, loadLog, saveLog, renderPrompt } = opts;
 
+  const all = await backlog.list(undefined, project);
+  const containers = containerIds(all);
+
   // Hard invariant, scoped to this project. If this ever trips, stop and report — do not continue.
-  const inProgress = await backlog.list(STATUS.inProgress, project);
+  const inProgress = all.filter((t) => t.status === STATUS.inProgress);
   if (inProgress.length > 1) {
     throw new Error(
       `Invariant violated: ${inProgress.length} tasks In Progress in project "${project}" ` +
@@ -54,25 +78,37 @@ export async function tick(opts: {
     );
   }
 
+  // A container whose subtasks blocked propagates that up immediately —
+  // the shared branch is stuck either way. Bookkeeping only, no model call.
+  for (const t of all) {
+    if (!containers.has(t.id) || t.status === STATUS.done || t.status === STATUS.blocked) continue;
+    const anyChildBlocked = all.some((c) => c.parentTaskId === t.id && c.status === STATUS.blocked);
+    if (anyChildBlocked) {
+      await backlog.setStatus(t.id, STATUS.blocked);
+      return { done: false, note: `${t.id}: blocked — a subtask is blocked` };
+    }
+  }
+
   // Approved execution work always comes first; backlog spec/plan work is
   // filler that keeps the Waiting-for-Approval queue stocked whenever
   // there's nothing greenlit to actually build yet.
-  let candidates: Awaited<ReturnType<Backlog["list"]>>;
+  let candidates: TaskSummary[];
   if (inProgress.length === 1) {
     candidates = inProgress;
   } else {
-    const rfi = await backlog.list(STATUS.waitingForApproval, project);
+    const rfi = all.filter((t) => t.status === STATUS.waitingForApproval);
     const approved = rfi.filter((t) => t.labels.includes(APPROVED_LABEL));
-    candidates = approved.length > 0 ? approved : await backlog.list(STATUS.backlog, project);
+    candidates = approved.length > 0 ? approved : all.filter((t) => t.status === STATUS.backlog);
   }
+  candidates = excludeInFlightContainers(candidates, containers, all);
   const picked = selectTask(candidates);
   if (!picked) return { done: true, note: "no ready tasks" };
 
   const task = await backlog.view(picked.id);
-  // Every task gets its own branch: isolates a bad attempt from the next
-  // task and gives the human a set of branches to review, not one shared
-  // working tree of commingled changes.
-  await ensureTaskBranch(repoCwd, baseBranch, task.id);
+  // Subtasks share their parent's branch — they're internal breakdown of one
+  // task, not separate reviewable units — so a bad attempt still isolates
+  // per top-level task, just not per subtask.
+  await ensureTaskBranch(repoCwd, baseBranch, task.parentTaskId ?? task.id);
   const log = await loadLog(task.id);
   const phase = resolvePhase(task, log.attempts);
   if (!phase) return { done: false, note: `${task.id}: nothing to do` };
@@ -103,11 +139,26 @@ export async function tick(opts: {
   // Control flow stays deterministic; the content is versioned in git
   // and reviewable before it takes effect.
   switch (phase.role) {
-    case "planner":
-      await backlog.setPlan(task.id, result.text);
+    case "planner": {
+      const parsed = parsePlannerOutput(result.text);
+      if (parsed.kind === "split") {
+        // Deliberately no approval gate here: splitting is planning, not
+        // execution — the same reasoning that lets owner/planner run
+        // unapproved today. Each child still needs its own `approved`
+        // label before its own executor phase can start.
+        for (const child of parsed.children) {
+          await backlog.createChild(task.id, child.title, {
+            description: child.description,
+            acceptanceCriteria: child.acceptanceCriteria,
+          });
+        }
+        return { done: false, note: `${task.id}: split into ${parsed.children.length} subtask(s)` };
+      }
+      await backlog.setPlan(task.id, parsed.plan);
       // Spec + plan complete: parked here until a human adds the approved label.
       await backlog.setStatus(task.id, STATUS.waitingForApproval);
       return { done: false, note: "plan written — waiting for approval" };
+    }
     case "architect":
     case "researcher":
     case "senior":
@@ -148,6 +199,12 @@ export async function tick(opts: {
     // to Review, once it has actually written a summary.
     for (const ac of task.acceptanceCriteria) {
       if (!ac.checked) await backlog.checkAc(task.id, ac.index);
+    }
+    if (task.parentTaskId) {
+      // A subtask doesn't get its own PR review — it finalizes here, and the
+      // parent's single reviewer pass runs once every subtask is Done.
+      await backlog.setStatus(task.id, STATUS.done);
+      return { done: false, note: "subtask complete" };
     }
     return { done: false, note: "gates green" };
   }

@@ -37,11 +37,19 @@ tests, diff checks) until the acceptance criteria are met or it's declared `Bloc
 after repeated failure. A task only reaches `Review` once a human is expected to open
 and merge its PR — `bakloop` never merges, pushes, or marks anything `Done` itself.
 
+If a task is too large for one executor pass, the planner can split it into subtasks
+(Backlog.md's `--parent`) instead of writing a plan. Subtasks run the full pipeline
+independently — including their own approval gate — but share the parent's branch, so
+many subtasks still add up to one PR. A subtask finalizes to `Done` itself once its
+gates go green (no separate review); the parent only reaches `reviewer` once every
+subtask is `Done`, and turns `Blocked` immediately if any subtask does.
+
 ## Safety model
 
-- **One task branch per ticket** (`bakloop/<task-id>`), forked from the project's base
-  branch. A bad attempt's commits stay isolated on that branch; nothing is ever
-  reverted or force-pushed.
+- **One branch per top-level ticket** (`bakloop/<task-id>`), forked from the project's
+  base branch. A bad attempt's commits stay isolated on that branch; nothing is ever
+  reverted or force-pushed. Subtasks created by a split share their parent's branch
+  rather than getting their own.
 - **`git push` is hard-blocked**, not just discouraged in a prompt: a wrapper script
   shadows `git` on the executor's `PATH` and refuses any command containing `push`
   (see `src/git-guard.ts`). Branches are reviewed and pushed by a human.

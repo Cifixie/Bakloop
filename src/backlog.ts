@@ -88,6 +88,25 @@ export class Backlog {
     await this.cli(["task", "edit", id, "--check-ac", String(index)]);
   }
 
+  /**
+   * Splits a too-large task into a subtask on the same branch (see branch.ts),
+   * created via Backlog.md's native `--parent`. Returns the new task's id,
+   * parsed from `backlog task create`'s plain-text confirmation line.
+   */
+  async createChild(
+    parentId: string,
+    title: string,
+    opts: { description?: string; acceptanceCriteria?: string[] } = {},
+  ): Promise<string> {
+    const args = ["task", "create", title, "--parent", parentId, "--plain"];
+    if (opts.description) args.push("--description", opts.description);
+    for (const ac of opts.acceptanceCriteria ?? []) args.push("--ac", ac);
+    const out = await this.cli(args);
+    const id = out.match(/^Task (\S+) -/m)?.[1];
+    if (!id) throw new Error(`Could not parse new subtask id from create output:\n${out}`);
+    return id;
+  }
+
   /** The message board: attributed comments on the task itself. */
   async comment(id: string, author: string, body: string): Promise<void> {
     await this.cli([
