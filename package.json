@@ -6,6 +6,8 @@
   "main": "index.js",
   "scripts": {
     "start": "tsx src/main.ts",
+    "new-draft": "tsx src/create-draft.ts",
+    "promote-draft": "tsx src/promote-draft.ts",
     "typecheck": "tsc --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

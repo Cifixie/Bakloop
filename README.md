@@ -89,10 +89,32 @@ at `http://localhost:8000/v1`):
 
 ## Running
 
+From the bakloop checkout, passing the registered project key:
+
 ```bash
-cd <registered-repo>
-npm start   # tsx src/main.ts, from the bakloop checkout
+pnpm start bogi   # tsx src/main.ts bogi
 ```
+
+`BAKLOOP_PROJECT` (if set) takes priority over this argument; with neither set, the
+project is resolved from `ORC_REPO_CWD`/`cwd` instead.
+
+## Adding tasks
+
+Two steps, kept deliberately separate: capture (raw, human-typed) and promotion (AI
+formats it into a real task, human reviews the result). Drafts are invisible to the tick
+loop — only real tasks feed it — so nothing here can ever be picked up half-formed.
+
+```bash
+pnpm run new-draft bogi       # capture: title + pasted text -> a Backlog.md draft
+pnpm run promote-draft         # list drafts (omit the id to just see what's pending)
+pnpm run promote-draft DRAFT-3 bogi   # AI drafts description + AC, you review, then promote
+```
+
+`new-draft` prompts for a title (leave it blank to have a lightweight local model name
+it — or paste something starting with a `# Heading` line and that's used for free) and a
+pasted description (end with a line containing just `.`). `promote-draft` runs the same
+`owner` prompt the tick loop itself uses, shows you the drafted description + acceptance
+criteria before doing anything, and lets you set type/priority once you confirm.
 
 The loop runs ticks until there's no ready work left in the project's lane, checking
 the working tree back out to the base branch on exit. State (attempt logs, detected

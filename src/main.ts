@@ -13,11 +13,12 @@ const run = promisify(execFile);
 async function main() {
   const projects = await loadProjects();
   const cwd = process.env.ORC_REPO_CWD ?? process.cwd();
-  const project = process.env.BAKLOOP_PROJECT ?? resolveProjectKey(cwd, projects);
+  const project = process.env.BAKLOOP_PROJECT ?? process.argv[2] ?? resolveProjectKey(cwd, projects);
   if (!project) {
     throw new Error(
-      `No project registered for ${cwd}. Run ` +
-        `"tsx src/register-project.ts <key> [path]" first — there is no default project.`,
+      `No project registered for ${cwd}. Pass a project key ("pnpm start <key>"), set ` +
+        `BAKLOOP_PROJECT, or run "tsx src/register-project.ts <key> [path]" first — there ` +
+        `is no default project.`,
     );
   }
   const entry = projects[project];

@@ -5,8 +5,17 @@ History lives in git.
 
 ---
 
-**Working on:** Nothing in flight. The last landed feature is the planner's subtask-split
-mechanism (see D-004/D-005 in `wiki/decisions.md`) and clean Ctrl+C/SIGTERM handling
+**Working on:** Nothing in flight. Latest landed: `pnpm start <key>` accepts the project
+key as an argv fallback (`BAKLOOP_PROJECT` env still wins if set — `src/main.ts`), and a
+two-step manual-task path — `pnpm run new-draft <key>` (`src/create-draft.ts`) captures a
+copy-pasted ticket (roadmap entry, GitHub issue) as a Backlog.md *draft*, tagged for a
+project via a `project:<key>` label since drafts have no structured `project` field of
+their own; `pnpm run promote-draft [draft-id] [key]` (`src/promote-draft.ts`) runs the
+same `owner` prompt the tick loop uses to draft a description + acceptance criteria from
+the raw text, shows it for review, then promotes and sets project/type/priority. Drafts
+are invisible to the tick loop (`Backlog.list()` only ever calls `task list`, never
+`draft list`), so a half-formed capture can't be picked up mid-pipeline. Before that: the
+planner's subtask-split mechanism (D-004/D-005) and clean Ctrl+C/SIGTERM handling
 (D-006). No fixed roadmap — development here is feature-driven; see `CLAUDE.md`'s Map.
 
 **Next action:**
