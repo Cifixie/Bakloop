@@ -65,6 +65,17 @@ subtask is `Done`, and turns `Blocked` immediately if any subtask does.
 npm install
 ```
 
+Initialize the shared Backlog.md store (idempotent — safe to re-run):
+
+```bash
+npm run setup   # tsx src/setup.ts
+```
+
+This runs `backlog init` non-interactively under `$BAKLOOP_HOME`, with its own local
+git history (never a GitHub remote), and sets the board's statuses/columns to
+bakloop's pipeline (`Backlog`, `Waiting for Approval`, `In Progress`, `Review`,
+`Blocked`, `Done` — see `src/types.ts`'s `STATUS`).
+
 Register each repo you want `bakloop` to drive against a project key (this also
 records the branch currently checked out as the base every task branch forks from):
 

@@ -5,7 +5,16 @@ History lives in git.
 
 ---
 
-**Working on:** Nothing in flight. Latest landed: `pnpm start <key>` accepts the project
+**Working on:** Nothing in flight. Latest landed: `npm run setup` (`src/setup.ts`)
+non-interactively initializes the shared Backlog.md store under `$BAKLOOP_HOME` — it
+`git init`s the store first (backlog.md only prompts to create a repo if one isn't
+already there; this keeps the store on its own local git history, no GitHub remote,
+without the interactive wizard) then runs `backlog init` and rewrites `config.yml`'s
+`statuses`/`default_status` to match `STATUS` in `src/types.ts`. Idempotent — re-running
+only re-applies the status fix-up. Gotcha worth knowing if you touch this again: `backlog
+init` creates its own `backlog/` subdir under whatever cwd it's given, so it must run
+from `bakloopHome()`, one level above `backlogDir()` — running it from `backlogDir()`
+itself nests a second `backlog/` inside it. Before that: `pnpm start <key>` accepts the project
 key as an argv fallback (`BAKLOOP_PROJECT` env still wins if set — `src/main.ts`), and a
 two-step manual-task path — `pnpm run new-draft <key>` (`src/create-draft.ts`) captures a
 copy-pasted ticket (roadmap entry, GitHub issue) as a Backlog.md *draft*, tagged for a

@@ -6,6 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "tsx src/main.ts",
+    "setup": "tsx src/setup.ts",
     "new-draft": "tsx src/create-draft.ts",
     "promote-draft": "tsx src/promote-draft.ts",
     "typecheck": "tsc --noEmit",
