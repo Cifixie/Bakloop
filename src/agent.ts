@@ -1,6 +1,7 @@
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createModels } from "@earendil-works/pi-ai";
 import { localProvider } from "./local-model.js";
+import { summarize } from "./summarize.js";
 import type { RunAgent } from "./tick.js";
 import { buildTools } from "./tools.js";
 import type { ToolName } from "./types.js";
@@ -45,7 +46,9 @@ export const runAgent: RunAgent = async (input) => {
 
   // Ticks run for minutes against a local model with nothing else to show
   // for it; a progress line proves it's alive without dumping the raw
-  // reasoning stream, and the reply is printed once, complete, at the end.
+  // reasoning stream, and each block gets condensed to one line by a
+  // second, lighter model (summarize.ts) once it finishes — falls back to
+  // a plain truncated excerpt if that model isn't configured.
   let chars = 0;
   let started = 0;
   let lastPrint = 0;
@@ -56,7 +59,7 @@ export const runAgent: RunAgent = async (input) => {
     process.stdout.write(`\r[${input.role}] ${label}... ${secs}s, ${chars} chars   `);
   };
 
-  const unsubscribe = agent.subscribe((event) => {
+  const unsubscribe = agent.subscribe(async (event) => {
     if (event.type === "message_update") {
       const e = event.assistantMessageEvent;
       switch (e.type) {
@@ -70,9 +73,12 @@ export const runAgent: RunAgent = async (input) => {
           chars += e.delta.length;
           progress("thinking");
           break;
-        case "thinking_end":
-          process.stdout.write(`\r[${input.role}] thought for ${((Date.now() - started) / 1000).toFixed(0)}s (${chars} chars)\n`);
+        case "thinking_end": {
+          const secs = ((Date.now() - started) / 1000).toFixed(0);
+          const summary = await summarize(e.content);
+          process.stdout.write(`\r[${input.role}] thought for ${secs}s: ${summary}\n`);
           break;
+        }
         case "text_start":
           chars = 0;
           started = Date.now();
@@ -82,9 +88,11 @@ export const runAgent: RunAgent = async (input) => {
           chars += e.delta.length;
           progress("replying");
           break;
-        case "text_end":
-          process.stdout.write(`\r[${input.role}] reply:\n${e.content}\n`);
+        case "text_end": {
+          const summary = await summarize(e.content);
+          process.stdout.write(`\r[${input.role}] reply: ${summary}\n`);
           break;
+        }
       }
     } else if (event.type === "tool_execution_start") {
       console.info(`[${input.role}] tool ${event.toolName} ${JSON.stringify(event.args)}`);

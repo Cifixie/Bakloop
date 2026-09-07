@@ -4,6 +4,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
+import { gitGuardDir } from "./git-guard.js";
 import type { ToolName } from "./types.js";
 
 const run = promisify(execFile);
@@ -81,17 +82,19 @@ export function createBashTool(cwd: string): AgentTool {
   return {
     name: "bash",
     label: "Bash",
-    description: `Run a bash command with cwd ${cwd} — that is the repo root, already checked out and ready to work in. Never cd out of it or scan other directories (e.g. "/", $HOME). Returns combined stdout/stderr.`,
+    description: `Run a bash command with cwd ${cwd} — that is the repo root, already checked out and ready to work in. Never cd out of it or scan other directories (e.g. "/", $HOME). git push is blocked and will fail — branches are reviewed and pushed by a human. Returns combined stdout/stderr.`,
     parameters: Type.Object({
       command: Type.String({ description: "Shell command to execute" }),
     }),
     execute: async (_toolCallId, params, signal) => {
       const { command } = params as { command: string };
       try {
+        const guardDir = await gitGuardDir();
         const { stdout, stderr } = await run("/bin/bash", ["-c", command], {
           cwd,
           signal,
           maxBuffer: 16 * 1024 * 1024,
+          env: { ...process.env, PATH: `${guardDir}:${process.env.PATH ?? ""}` },
         });
         return { content: [{ type: "text", text: stdout + stderr }], details: { command } };
       } catch (e) {
