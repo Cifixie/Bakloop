@@ -77,10 +77,11 @@ bakloop's pipeline (`Backlog`, `Waiting for Approval`, `In Progress`, `Review`,
 `Blocked`, `Done` — see `src/types.ts`'s `STATUS`).
 
 Register each repo you want `bakloop` to drive against a project key (this also
-records the branch currently checked out as the base every task branch forks from):
+records the branch currently checked out as the base every task branch forks from, and
+adds the key to the shared store's `projects` list in `backlog/config.yml`):
 
 ```bash
-tsx src/register-project.ts <key> [path]   # path defaults to cwd
+npm run register-project -- <key> [path]   # path defaults to cwd; tsx src/register-project.ts
 ```
 
 Point it at a local, OpenAI-compatible model server (e.g. [oMLX](https://github.com/ml-explore/mlx)
