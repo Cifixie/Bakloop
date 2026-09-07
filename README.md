@@ -1,0 +1,92 @@
+# bakloop
+
+A local, backlog-driven agent loop that turns raw [Backlog.md](https://github.com/MrLesk/Backlog.md)
+tickets into reviewed, branch-isolated pull requests — running entirely against a
+local model, with a human approval gate between planning and execution.
+
+## How it works
+
+`bakloop` polls a shared [Backlog.md](https://github.com/MrLesk/Backlog.md) store one
+**tick** at a time (one tick = one model call). Each task moves through a fixed
+pipeline of **roles**, each one writing exactly one field on the task:
+
+```
+Backlog → owner → architect/researcher (optional) → planner → [human: approved label]
+        → Waiting for Approval → executor (gated) → senior (on repeated failure)
+        → reviewer → Review (human merges) → Done
+```
+
+| Role | Writes | Tools |
+|---|---|---|
+| `owner` | description + acceptance criteria | none |
+| `architect` | notes (constraints) | read-only |
+| `researcher` | notes (findings), only when labeled `needs-research` | read + fetch |
+| `planner` | implementation plan | read-only |
+| `executor` | files + notes | read, write, edit, bash |
+| `senior` | notes (advice), only after repeated failed attempts | read-only |
+| `reviewer` | final summary, moves task to Review | read, bash |
+
+Which role runs next is **derived from task state**, never chosen by a model — see
+`src/phase.ts`. This is the one routing decision with no verification signal, so it
+has to be deterministic instead of guessed.
+
+Once a task has a description, acceptance criteria, and a plan, it's parked in
+**Waiting for Approval**. Execution never starts on its own — a human has to add the
+`approved` label first. From there the executor runs the gate loop (typecheck, lint,
+tests, diff checks) until the acceptance criteria are met or it's declared `Blocked`
+after repeated failure. A task only reaches `Review` once a human is expected to open
+and merge its PR — `bakloop` never merges, pushes, or marks anything `Done` itself.
+
+## Safety model
+
+- **One task branch per ticket** (`bakloop/<task-id>`), forked from the project's base
+  branch. A bad attempt's commits stay isolated on that branch; nothing is ever
+  reverted or force-pushed.
+- **`git push` is hard-blocked**, not just discouraged in a prompt: a wrapper script
+  shadows `git` on the executor's `PATH` and refuses any command containing `push`
+  (see `src/git-guard.ts`). Branches are reviewed and pushed by a human.
+- **Gates are the only verdict that counts.** The model's own summary of its work is
+  never parsed or trusted — pass/fail comes from running `tsc`, `biome`, and `vitest`
+  and diffing the branch against its base (`src/gates.ts`).
+- **At most one task In Progress per project.** Enforced as a hard invariant on every
+  tick.
+
+## Setup
+
+```bash
+npm install
+```
+
+Register each repo you want `bakloop` to drive against a project key (this also
+records the branch currently checked out as the base every task branch forks from):
+
+```bash
+tsx src/register-project.ts <key> [path]   # path defaults to cwd
+```
+
+Point it at a local, OpenAI-compatible model server (e.g. [oMLX](https://github.com/ml-explore/mlx)
+at `http://localhost:8000/v1`):
+
+| Env var | Default |
+|---|---|
+| `OMLX_BASE_URL` | `http://localhost:8000/v1` |
+| `OMLX_MODEL_ID` | `mlx-community--Qwen3.6-35B-A3B-6bit` |
+| `OMLX_CONTEXT_WINDOW` | `262144` |
+| `OMLX_SUMMARY_MODEL_ID` | unset (disables the console summarizer) |
+| `OMLX_SUMMARY_BASE_URL` | falls back to `OMLX_BASE_URL` |
+| `OMLX_SUMMARY_CONTEXT_WINDOW` | `32768` |
+| `BAKLOOP_HOME` | `~/.bakloop` |
+| `BAKLOOP_PROJECT` | resolved from cwd if unset |
+| `ORC_REPO_CWD` | `process.cwd()` |
+
+## Running
+
+```bash
+cd <registered-repo>
+npm start   # tsx src/main.ts, from the bakloop checkout
+```
+
+The loop runs ticks until there's no ready work left in the project's lane, checking
+the working tree back out to the base branch on exit. State (attempt logs, detected
+gate config) lives under `$BAKLOOP_HOME/state/<project>`, out of the target repo's own
+git history.
