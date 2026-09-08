@@ -27,6 +27,12 @@ function templateFor(role: Role, task: Task): string {
   // (subtasks present) means this architect call is the post-split
   // sibling-alignment pass, not the pre-split interface contract.
   if (role === "architect" && task.subtasks.length > 0) return "architect-alignment";
+  // `status: "Draft"` only ever appears on promote-draft's fake stand-in
+  // task (see fakeTask in promote-draft.ts) — never a real task in the tick
+  // loop. There, "notes" is the whole human (or human+AI) draft, not
+  // incremental machine bookkeeping, so it must be preserved, not
+  // paraphrased down like prompts/owner.md tells the tick-loop owner to do.
+  if (role === "owner" && task.status === "Draft") return "owner-from-draft";
   return role;
 }
 

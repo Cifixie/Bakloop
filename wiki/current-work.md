@@ -34,6 +34,20 @@ promotes immediately — no `y/N` gate, no type/priority prompt. Type comes from
 promoted task still lands in `Waiting for Approval` and needs a human to move it to
 `Ready for Work` before execution. Documented in README's "Adding tasks" section.
 
+**Same area, also uncommitted: fixed information loss on draft promotion.** Two gaps,
+found when a user pastes an already-rich draft (e.g. a plan they had another AI write) and
+watches promote-draft flatten it: (1) the human's original draft text was never kept
+anywhere on the resulting task — only the `owner` role's rewritten `description`
+survived — so it's now also written verbatim as a `"draft"`-authored comment
+(`src/promote-draft.ts`); (2) `prompts/owner.md`'s tick-loop instruction to treat notes as
+"informing the description without being copied verbatim" is right for incremental
+machine bookkeeping but wrong for a one-shot human draft, so it paraphrased away
+already-worked-out specifics. `src/prompts.ts`'s `templateFor` now picks a distinct
+`owner-from-draft` template (keyed on the fake stand-in task's `status: "Draft"`, which no
+real task ever has) instructing the model to preserve substantive content rather than
+summarize it. Not yet run against a real draft with a real local model — only
+typechecked.
+
 **Needs your sign-off:**
 1. **D-007, drafted below** — architect contract required before a split creates
    children; second alignment pass required before a container reaches `reviewer`.

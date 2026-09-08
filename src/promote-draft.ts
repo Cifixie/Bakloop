@@ -120,6 +120,14 @@ async function promoteOne(draftId: string, projectArg: string | undefined): Prom
   if (labelProject) editArgs.push("--remove-label", `project:${labelProject}`);
   await cli(editArgs);
 
+  // The task's `description` is the owner role's rewrite, not the human's
+  // original words — preserve the verbatim draft as a comment so nothing is
+  // lost if the rewrite paraphrased or dropped something. Comments (not
+  // implementationNotes) because every future tick reads notes in full,
+  // while comments are pulled as a bounded recent window (see CONTEXT in
+  // prompts.ts) — this is a one-time reference, not ongoing guidance.
+  if (draft.description) await backlog.comment(created.id, "draft", draft.description);
+
   console.info(`Promoted ${draftId} -> ${created.id}, project="${project}".`);
 }
 
