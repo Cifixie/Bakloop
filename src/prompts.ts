@@ -1,44 +1,151 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { NEEDS_SPLIT_LABEL } from "./phase.js";
 import type { Role, Task } from "./types.js";
 
 const PROMPTS_DIR = fileURLToPath(new URL("../prompts/", import.meta.url));
 
-const templateCache = new Map<Role, string>();
+const templateCache = new Map<string, string>();
 
-function loadTemplate(role: Role): string {
-  const cached = templateCache.get(role);
+function loadTemplate(name: string): string {
+  const cached = templateCache.get(name);
   if (cached) return cached;
-  const template = readFileSync(`${PROMPTS_DIR}${role}.md`, "utf-8");
-  templateCache.set(role, template);
+  const template = readFileSync(`${PROMPTS_DIR}${name}.md`, "utf-8");
+  templateCache.set(name, template);
   return template;
 }
 
-function formatContext(task: Task): string {
+/**
+ * Which template a role's tick actually uses. Normally one per role; the
+ * planner is the exception, because a task carrying `needs-split` is being
+ * re-planned specifically BECAUSE it didn't fit, and must not be offered the
+ * "write a plan instead" branch that `prompts/planner.md` allows.
+ */
+function templateFor(role: Role, task: Task): string {
+  if (role === "planner" && task.labels.includes(NEEDS_SPLIT_LABEL)) return "planner-split";
+  return role;
+}
+
+/** Which of a task's fields a given role's prompt is allowed to contain. */
+interface ContextPolicy {
+  description?: boolean;
+  acceptanceCriteria?: boolean;
+  definitionOfDone?: boolean;
+  plan?: boolean;
+  /** `implementationNotes` — architect/researcher/senior guidance. */
+  notes?: boolean;
+  /** How many of the most recent progress-log comments to include; 0 = none. */
+  comments?: number;
+  finalSummary?: boolean;
+  dependencies?: boolean;
+}
+
+/**
+ * Context is RATIONED PER ROLE, not handed out whole.
+ *
+ * Two independent reasons, and both matter:
+ *
+ * 1. Cost. Every tick is one call to a small local model. Concatenating
+ *    every field of a long-running task into every prompt is what pushes a
+ *    tick into context overflow, which is bakloop's most common failure mode.
+ *
+ * 2. Independence. A role that reads another role's account of the work
+ *    inherits its framing. `criteria` gets the description and NOTHING else,
+ *    precisely so it writes criteria for the outcome rather than restating a
+ *    description it just watched itself write. `reviewer` is kept off the
+ *    progress log for the same reason — its job is to summarise the change,
+ *    not to relay the executor's story about it.
+ *
+ * `senior` is the one role that gets the failure log in full: repeated
+ * machine failure is exactly the evidence it was called in to diagnose.
+ */
+const CONTEXT: Record<Role, ContextPolicy> = {
+  // Sees only the raw capture it is refining (carried in notes by
+  // promote-draft's stand-in task) plus dependencies for scope.
+  owner: { notes: true, dependencies: true },
+  criteria: { description: true },
+  architect: { description: true, acceptanceCriteria: true, dependencies: true },
+  researcher: { description: true, acceptanceCriteria: true, dependencies: true },
+  planner: {
+    description: true,
+    acceptanceCriteria: true,
+    definitionOfDone: true,
+    notes: true,
+    dependencies: true,
+  },
+  executor: {
+    description: true,
+    acceptanceCriteria: true,
+    definitionOfDone: true,
+    plan: true,
+    notes: true,
+    // Enough to avoid repeating the last failure, not the whole history.
+    comments: 3,
+    dependencies: true,
+  },
+  senior: {
+    description: true,
+    acceptanceCriteria: true,
+    plan: true,
+    notes: true,
+    comments: 10,
+  },
+  documenter: { description: true, acceptanceCriteria: true, plan: true, notes: true },
+  reviewer: {
+    description: true,
+    acceptanceCriteria: true,
+    definitionOfDone: true,
+    plan: true,
+    notes: true,
+    dependencies: true,
+  },
+};
+
+function checklist(items: { text: string; checked: boolean }[]): string {
+  return items.map((i) => `- [${i.checked ? "x" : " "}] ${i.text}`).join("\n");
+}
+
+function formatContext(role: Role, task: Task): string {
+  const policy = CONTEXT[role];
   const sections: string[] = [];
 
-  if (task.description) sections.push(`Description:\n${task.description}`);
-
-  if (task.acceptanceCriteria.length > 0) {
-    const list = task.acceptanceCriteria
-      .map((ac) => `- [${ac.checked ? "x" : " "}] ${ac.text}`)
-      .join("\n");
-    sections.push(`Acceptance criteria:\n${list}`);
+  if (policy.description && task.description) {
+    sections.push(`Description:\n${task.description}`);
   }
-
-  if (task.implementationPlan) sections.push(`Implementation plan:\n${task.implementationPlan}`);
-  if (task.implementationNotes) sections.push(`Notes so far:\n${task.implementationNotes}`);
-  if (task.finalSummary) sections.push(`Final summary:\n${task.finalSummary}`);
-  if (task.dependencies.length > 0) sections.push(`Dependencies: ${task.dependencies.join(", ")}`);
+  if (policy.acceptanceCriteria && task.acceptanceCriteria.length > 0) {
+    sections.push(`Acceptance criteria:\n${checklist(task.acceptanceCriteria)}`);
+  }
+  if (policy.definitionOfDone && task.definitionOfDone.length > 0) {
+    sections.push(`Definition of done:\n${checklist(task.definitionOfDone)}`);
+  }
+  if (policy.plan && task.implementationPlan) {
+    sections.push(`Implementation plan:\n${task.implementationPlan}`);
+  }
+  if (policy.notes && task.implementationNotes) {
+    sections.push(`Notes so far:\n${task.implementationNotes}`);
+  }
+  if (policy.comments && task.comments.length > 0) {
+    const recent = task.comments.slice(-policy.comments);
+    const log = recent.map((c) => `${c.author}: ${c.body}`).join("\n");
+    const elided = task.comments.length - recent.length;
+    const header = elided > 0 ? `Progress log (most recent ${recent.length}, ${elided} older omitted):` : "Progress log:";
+    sections.push(`${header}\n${log}`);
+  }
+  if (policy.finalSummary && task.finalSummary) {
+    sections.push(`Final summary:\n${task.finalSummary}`);
+  }
+  if (policy.dependencies && task.dependencies.length > 0) {
+    sections.push(`Dependencies: ${task.dependencies.join(", ")}`);
+  }
 
   return sections.length > 0 ? sections.join("\n\n") : "(no further context)";
 }
 
 /** Loads a role's paragraph template from disk and fills in this task's fields. */
 export function renderPrompt(role: Role, task: Task): string {
-  const template = loadTemplate(role);
+  const template = loadTemplate(templateFor(role, task));
   return template
     .replaceAll("{{id}}", task.id)
     .replaceAll("{{title}}", task.title)
-    .replaceAll("{{context}}", formatContext(task));
+    .replaceAll("{{context}}", formatContext(role, task));
 }

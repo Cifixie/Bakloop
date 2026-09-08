@@ -1,49 +1,74 @@
+import { TASK_TYPES } from "./types.js";
+
 /** Matches a numbered ("1.", "1)", "1:") or bulleted ("-", "*") list item. */
 const AC_LINE = /^\s*(?:\d+[.):]|[-*])\s+(.*)$/;
 
+const TYPE_LINE = /^\s*(?:\*\*)?Type(?:\*\*)?:\s*`?([A-Za-z-]+)`?\s*\.?\s*$/i;
+
 /**
- * Splits the owner role's free-text output into a description and a list
- * of acceptance criteria. prompts/owner.md asks for an explicit `Acceptance
- * criteria:` header line (same contract as AC_HEADER/parsePlannerOutput
- * below) so the split is a literal header lookup, not a guess at where a
- * list "starts" — the description itself often contains its own list-like
- * lines (e.g. "supports: 1. X 2. Y"), which made an earlier heuristic-only
- * version of this function truncate the description at its own first
- * bullet. If the model ignores the header (local models don't always
- * follow formatting instructions), fall back to treating the trailing
- * contiguous run of list-item/blank lines as the AC block.
+ * Splits the owner role's free-text output into a description and a task
+ * type. The owner no longer writes acceptance criteria — that's the
+ * `criteria` role's single job, deliberately run as its own tick against
+ * the description alone (see `resolvePhase`).
+ *
+ * An unrecognised type is dropped rather than returned: Backlog.md rejects a
+ * type outside its configured list, and killing a tick over a cosmetic field
+ * would be a worse outcome than leaving `type` unset for a human to pick.
  */
 export function parseOwnerOutput(text: string): {
   description: string;
-  acceptanceCriteria: string[];
+  type: string | null;
 } {
   const lines = text.split("\n");
 
-  const headerIdx = lines.findIndex((l) => AC_HEADER.test(l));
-  if (headerIdx !== -1) {
-    const description = lines.slice(0, headerIdx).join("\n").trim();
-    const acceptanceCriteria = lines
-      .slice(headerIdx + 1)
+  // Only the LAST non-blank line counts: the type line is requested last, and
+  // the description itself may legitimately discuss "type:" in its prose.
+  let lastIdx = lines.length - 1;
+  while (lastIdx >= 0 && lines[lastIdx]!.trim() === "") lastIdx--;
+  const typeIdx = lastIdx >= 0 && TYPE_LINE.test(lines[lastIdx]!) ? lastIdx : -1;
+
+  if (typeIdx === -1) return { description: text.trim(), type: null };
+
+  const raw = lines[typeIdx]!.match(TYPE_LINE)![1]!.toLowerCase();
+  const type = (TASK_TYPES as readonly string[]).includes(raw) ? raw : null;
+  return { description: lines.slice(0, typeIdx).join("\n").trim(), type };
+}
+
+const DOD_HEADER = /^\s*(?:\*\*)?Definition of done(?:\*\*)?:\s*$/i;
+
+/**
+ * Splits the `criteria` role's output into acceptance criteria and
+ * Definition-of-Done items, on two literal header lines (same contract as
+ * `parsePlannerOutput`). Header lookup rather than list-shape guessing, for
+ * the reason recorded in git history: an earlier heuristic-only owner parser
+ * truncated descriptions at their own first bullet.
+ *
+ * If the model omits the AC header entirely (local models don't always
+ * follow formatting instructions), fall back to treating every list item
+ * before any DoD header as acceptance criteria — an over-full AC list is
+ * recoverable by a human, an empty one stalls the loop.
+ */
+export function parseCriteriaOutput(text: string): {
+  acceptanceCriteria: string[];
+  definitionOfDone: string[];
+} {
+  const lines = text.split("\n");
+  const dodIdx = lines.findIndex((l) => DOD_HEADER.test(l));
+  const acHeaderIdx = lines.findIndex((l) => AC_HEADER.test(l));
+
+  const acEnd = dodIdx === -1 ? lines.length : dodIdx;
+  const acStart = acHeaderIdx !== -1 && acHeaderIdx < acEnd ? acHeaderIdx + 1 : 0;
+
+  const items = (from: number, to: number) =>
+    lines
+      .slice(from, to)
       .map((l) => l.match(AC_LINE)?.[1]?.trim())
       .filter((s): s is string => Boolean(s));
-    return { description, acceptanceCriteria };
-  }
 
-  let end = lines.length;
-  while (end > 0 && lines[end - 1]!.trim() === "") end--;
-
-  let start = end;
-  while (start > 0 && (lines[start - 1]!.trim() === "" || AC_LINE.test(lines[start - 1]!))) start--;
-
-  const block = lines.slice(start, end);
-  if (!block.some((l) => AC_LINE.test(l))) {
-    return { description: text.trim(), acceptanceCriteria: [] };
-  }
-  const description = lines.slice(0, start).join("\n").trim();
-  const acceptanceCriteria = block
-    .map((l) => l.match(AC_LINE)?.[1]?.trim())
-    .filter((s): s is string => Boolean(s));
-  return { description, acceptanceCriteria };
+  return {
+    acceptanceCriteria: items(acStart, acEnd),
+    definitionOfDone: dodIdx === -1 ? [] : items(dodIdx + 1, lines.length),
+  };
 }
 
 export interface PlannerSplit {

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
@@ -78,6 +78,59 @@ export function createEditTool(cwd: string): AgentTool {
   };
 }
 
+/**
+ * The documenter role's whole reason to exist is a smaller blast radius than
+ * the executor's — this is the actual enforcement, not just a prompt
+ * instruction. README* (any extension), anything under docs/ or wiki/, and
+ * any *.md/*.mdx file anywhere in the repo. A path that resolves outside
+ * `cwd` (e.g. via `../`) is never a doc path, regardless of name.
+ */
+const DOC_PATH_PATTERN = /(^|\/)(README(\.[^/]*)?|docs\/.*|wiki\/.*|.*\.mdx?)$/i;
+
+function isDocPath(cwd: string, rawPath: string): boolean {
+  const absolute = resolveInCwd(cwd, rawPath);
+  const rel = relative(cwd, absolute);
+  if (rel.startsWith("..") || isAbsolute(rel)) return false;
+  return DOC_PATH_PATTERN.test(rel);
+}
+
+function assertDocPath(cwd: string, path: string): void {
+  if (!isDocPath(cwd, path)) {
+    throw new Error(
+      `Refusing to write "${path}" — the documenter role is restricted to documentation ` +
+        `files (README*, docs/**, wiki/**, *.md/*.mdx).`,
+    );
+  }
+}
+
+export function createDocsWriteTool(cwd: string): AgentTool {
+  const write = createWriteTool(cwd);
+  return {
+    ...write,
+    name: "docsWrite",
+    description: `Write content to a documentation file (README*, docs/**, wiki/**, *.md/*.mdx), creating it if missing and overwriting it if present. Creates parent directories as needed. Relative paths resolve against ${cwd}. Refuses any path that isn't a documentation file.`,
+    execute: async (toolCallId, params, signal) => {
+      const { path } = params as { path: string };
+      assertDocPath(cwd, path);
+      return write.execute(toolCallId, params, signal);
+    },
+  };
+}
+
+export function createDocsEditTool(cwd: string): AgentTool {
+  const edit = createEditTool(cwd);
+  return {
+    ...edit,
+    name: "docsEdit",
+    description: `Replace one exact occurrence of text in a documentation file (README*, docs/**, wiki/**, *.md/*.mdx). oldText must match uniquely and exactly, including whitespace. Relative paths resolve against ${cwd}. Refuses any path that isn't a documentation file.`,
+    execute: async (toolCallId, params, signal) => {
+      const { path } = params as { path: string };
+      assertDocPath(cwd, path);
+      return edit.execute(toolCallId, params, signal);
+    },
+  };
+}
+
 export function createBashTool(cwd: string): AgentTool {
   return {
     name: "bash",
@@ -136,6 +189,8 @@ const TOOL_FACTORIES: Record<ToolName, (cwd: string) => AgentTool> = {
   edit: createEditTool,
   bash: createBashTool,
   fetch: createFetchTool,
+  docsWrite: createDocsWriteTool,
+  docsEdit: createDocsEditTool,
 };
 
 /** Builds the concrete tool set for a role's allowlist. Nothing outside this list is ever handed to the model. */

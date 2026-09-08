@@ -19,7 +19,7 @@ export function createLogStore(baseDir: string) {
         const raw = await readFile(pathFor(taskId), "utf-8");
         return JSON.parse(raw) as AttemptLog;
       } catch {
-        return { taskId, attempts: 0, signatures: [] };
+        return { taskId, attempts: 0, signatures: [], modelErrors: 0 };
       }
     },
     async saveLog(log: AttemptLog): Promise<void> {

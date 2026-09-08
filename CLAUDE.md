@@ -2,9 +2,9 @@
 
 A local, backlog-driven agent loop that turns raw Backlog.md tickets into reviewed,
 branch-isolated pull requests against a local model, one tick (= one model call) at a
-time. It is not itself agent-built software with tests of its own yet — bakloop is the
-orchestrator; the gates it runs (`tsc`/`biome`/`vitest`) are checks on the *target* repo,
-not on bakloop.
+time. bakloop is the orchestrator: the gates it runs (`tsc`/`biome`/`vitest`) are checks
+on the *target* repo, not on bakloop. bakloop's own tests are a separate, much smaller
+thing — see Testing below.
 
 ## Hard constraints — do not violate
 
@@ -96,14 +96,30 @@ one is already stale — fix it by deleting the copy, not by syncing them.
 
 ## Testing
 
-See `wiki/current-work.md` for the current state of bakloop's own test coverage. The
-gates it runs (`tsc`/`biome`/`vitest`) apply to the *target* repos it drives, not to
-bakloop itself. If bakloop gets its own tests, the first one should cover `src/phase.ts`'s
-routing table — it's the one piece of logic with no other verification signal (see
-`src/phase.ts`'s own comment on this).
+`npm test` runs `src/*.test.ts` through Node's built-in test runner via tsx — **no test
+framework is installed, and adding one needs a reason.** Coverage is deliberately narrow:
+it covers `src/phase.ts`'s routing table plus the pure functions that feed it
+(`classifyDocsRelevance`, `isContextOverflow`, the `spec.ts` parsers). Routing is the one
+piece of logic with no other verification signal — a bad choice there corrupts the loop
+silently instead of failing a task loudly — so it is the piece that earns a test.
 
-To sanity-check a change by hand: `npm run typecheck`, then run `npm start` against a
-registered project with a real Backlog.md store and watch a tick or two.
+Keep that boundary. `resolvePhase` takes its machine observations as an injected
+`Signals` argument specifically so it stays pure and testable without a repo; if you need
+a new observation to route on, compute it in `tick.ts` and add it to `Signals` rather
+than doing IO inside the router.
+
+The gates bakloop runs (`tsc`/`biome`/`vitest`) still apply only to the *target* repos it
+drives, not to bakloop itself.
+
+To sanity-check a change by hand: `npm run typecheck && npm test`, then run `npm start`
+against a registered project with a real Backlog.md store and watch a tick or two.
+
+**Before/after numbers come from `npm run report <project>`,** not from impressions. Every
+tick is journaled to `state/<project>/journal.db` (see README's Observability section). If
+you change how roles are structured, what they're given, or how many ticks a task takes,
+record ticks-per-completed-task and per-role prompt size before and after — that's the
+whole reason the journal exists. Adding a field to `TickRecord` is cheap; do it when you
+have a question it would answer, not because a value was in scope.
 
 ## Deliberately not built yet
 
@@ -115,6 +131,8 @@ registered project with a real Backlog.md store and watch a tick or two.
 ## Map
 
 - `wiki/` — living state: decisions, gotchas, current work
+- `src/journal.ts` + `src/report.ts` — the tick journal and its report; read these before
+  trying to answer any question about how the loop performs
 - `README.md` — the pipeline diagram, safety model, and setup/run instructions; read it
   first for how to actually run bakloop. This file (`CLAUDE.md`) is for an agent about to
   change bakloop's own code, not for a user running it.

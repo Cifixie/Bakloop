@@ -9,6 +9,23 @@ export interface AcceptanceCriterion {
   checked: boolean;
 }
 
+/** Same shape as an acceptance criterion — Backlog.md's `--dod` list. */
+export type DefinitionOfDoneItem = AcceptanceCriterion;
+
+/**
+ * The task's message board. bakloop uses it as the append-only PROGRESS LOG:
+ * every entry is written by the orchestrator, never by a model directly, and
+ * is attributed to the role whose tick produced it. Kept separate from
+ * `implementationNotes` on purpose — see `src/prompts.ts` for which roles are
+ * allowed to read it.
+ */
+export interface Comment {
+  index: number;
+  body: string;
+  createdAt: string;
+  author: string;
+}
+
 export interface Readiness {
   isReady: boolean;
   isBlocked: boolean;
@@ -34,13 +51,23 @@ export interface TaskSummary {
 export interface Task extends TaskSummary {
   path: string;
   description: string | null;
+  /** One of Backlog.md's configured task types (bug/feature/chore/...); the owner role sets it. */
+  type: string | null;
   dependencies: string[];
   readiness: Readiness;
   acceptanceCriteria: AcceptanceCriterion[];
+  /** The standing bar this task must clear, written by the `criteria` role alongside the AC. */
+  definitionOfDone: DefinitionOfDoneItem[];
   implementationPlan: string | null;
+  /**
+   * GUIDANCE for the executor, and nothing else. Written only by architect,
+   * researcher, and senior. Machine bookkeeping (gate failures, model-call
+   * failures) goes to `comments` instead, so this field stays small enough to
+   * hand a local model every tick.
+   */
   implementationNotes: string | null;
   finalSummary: string | null;
-  comments: unknown[];
+  comments: Comment[];
   modifiedFiles: string[];
   /** Non-empty once the planner has split this task; makes it a container, not an executable unit. */
   subtasks: { id: string; title: string }[];
@@ -57,6 +84,21 @@ export interface TaskViewResponse {
   kind: "task-view";
   task: Task;
 }
+
+/**
+ * Backlog.md's default task types. Mirrors `taskTypes` in the store's
+ * config.yml — an owner-proposed type that isn't on this list is dropped
+ * rather than passed to the CLI, which would reject it and kill the tick.
+ */
+export const TASK_TYPES = [
+  "bug",
+  "feature",
+  "enhancement",
+  "task",
+  "chore",
+  "docs",
+  "spike",
+] as const;
 
 /** Pipeline statuses. Must match backlog/config.yml statuses. */
 export const STATUS = {
@@ -78,22 +120,29 @@ export const STATUS = {
  * one tool allowlist. If two roles share both, they are one role.
  */
 export type Role =
-  | "owner"      // -> description + acceptanceCriteria
-  | "architect"  // -> notes (constraints), read-only
-  | "researcher" // -> notes (findings), read + fetch
-  | "planner"    // -> implementationPlan
-  | "executor"   // -> files + notes
-  | "senior"     // -> notes (advice), read-only
-  | "reviewer";  // -> finalSummary + new tickets
+  | "owner"       // -> description + type
+  | "criteria"    // -> acceptanceCriteria + definitionOfDone, reads the description ONLY
+  | "architect"   // -> notes (constraints), read-only
+  | "researcher"  // -> notes (findings), read + fetch
+  | "planner"     // -> implementationPlan, or a SPLIT into subtasks
+  | "executor"    // -> files
+  | "senior"      // -> notes (advice), read-only
+  | "documenter"  // -> doc files, only when the diff touches a documented surface
+  | "reviewer";   // -> finalSummary + new tickets
 
-export type ToolName = "read" | "write" | "edit" | "bash" | "fetch";
+export type ToolName = "read" | "write" | "edit" | "bash" | "fetch" | "docsWrite" | "docsEdit";
 
 export const ROLE_TOOLS: Record<Role, readonly ToolName[]> = {
   owner: [],
+  // Deliberately toolless: giving `criteria` the codebase would let it write
+  // criteria describing the implementation it can see rather than the outcome
+  // the description asks for. Its whole value is that it reads one field.
+  criteria: [],
   architect: ["read"],
   researcher: ["read", "fetch"],
   planner: ["read"],
   executor: ["read", "write", "edit", "bash"],
   senior: ["read"],
+  documenter: ["read", "docsWrite", "docsEdit"],
   reviewer: ["read", "bash"],
 };

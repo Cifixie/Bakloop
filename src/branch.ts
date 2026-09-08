@@ -37,3 +37,17 @@ export async function ensureTaskBranch(cwd: string, baseBranch: string, taskId: 
   }
   return branch;
 }
+
+/**
+ * Commits whatever's in the working tree, deterministically — used by roles
+ * (documenter) that get no `bash` tool, specifically so their restricted
+ * file-write tools remain the only way they can touch the repo. Returns
+ * false (no-op) when there's nothing to commit.
+ */
+export async function commitAll(cwd: string, message: string): Promise<boolean> {
+  const { stdout } = await run("git", ["status", "--porcelain"], { cwd });
+  if (!stdout.trim()) return false;
+  await run("git", ["add", "-A"], { cwd });
+  await run("git", ["commit", "-m", message], { cwd });
+  return true;
+}

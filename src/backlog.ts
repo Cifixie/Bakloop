@@ -65,11 +65,40 @@ export class Backlog {
     await this.cli(["task", "edit", id, "--description", description]);
   }
 
+  async setType(id: string, type: string): Promise<void> {
+    await this.cli(["task", "edit", id, "--type", type]);
+  }
+
   /** Replaces the entire acceptance-criteria list — never a partial merge. */
   async setAcceptanceCriteria(id: string, criteria: string[]): Promise<void> {
     const args = ["task", "edit", id];
     for (const c of criteria) args.push("--acceptance-criteria", c);
     await this.cli(args);
+  }
+
+  /**
+   * Appends Definition-of-Done items. Backlog.md has no replace-all flag for
+   * DoD (unlike `--acceptance-criteria`), only `--dod`/`--remove-dod`, so
+   * callers must only use this on a task whose DoD list is still empty —
+   * `resolvePhase` guarantees that by routing to `criteria` only when it is.
+   */
+  async addDefinitionOfDone(id: string, items: string[]): Promise<void> {
+    if (items.length === 0) return;
+    const args = ["task", "edit", id];
+    for (const item of items) args.push("--dod", item);
+    await this.cli(args);
+  }
+
+  async checkDod(id: string, index: number): Promise<void> {
+    await this.cli(["task", "edit", id, "--check-dod", String(index)]);
+  }
+
+  async addLabel(id: string, label: string): Promise<void> {
+    await this.cli(["task", "edit", id, "--add-label", label]);
+  }
+
+  async removeLabel(id: string, label: string): Promise<void> {
+    await this.cli(["task", "edit", id, "--remove-label", label]);
   }
 
   async setPlan(id: string, plan: string): Promise<void> {
@@ -107,7 +136,12 @@ export class Backlog {
     return id;
   }
 
-  /** The message board: attributed comments on the task itself. */
+  /**
+   * The append-only progress log (see `Comment` in types.ts). Every machine
+   * observation about a tick — gate failures, model-call failures, a skipped
+   * documenter, a forced split — lands here attributed to the role it came
+   * from, instead of being concatenated into `implementationNotes`.
+   */
   async comment(id: string, author: string, body: string): Promise<void> {
     await this.cli([
       "task",

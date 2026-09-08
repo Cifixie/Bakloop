@@ -88,6 +88,50 @@ async function branchDiff(cwd: string, baseBranch: string) {
   return tryRun("git", ["diff", `${baseBranch}...HEAD`], cwd);
 }
 
+/** Files whose change is, by itself, a reason to look at the docs. */
+const DOC_PATH = /(?:^|\/)(?:README|CHANGELOG)[^/]*$|^(?:docs|wiki)\/|\.mdx?$/i;
+/** Declared interfaces: changing one of these changes how the project is used. */
+const SURFACE_PATH =
+  /(?:^|\/)(?:package\.json|openapi[^/]*\.(?:ya?ml|json)|[^/]*\.proto|[^/]*\.schema\.json)$|(?:^|\/)[^/]*\.config\.[cm]?[jt]s$/i;
+/**
+ * An added or removed `export` in the diff body. A deliberately crude proxy
+ * for "the public surface moved" — it over-triggers on an internal helper
+ * becoming exported, which is the safe direction to be wrong in.
+ */
+const EXPORT_CHANGE = /^[+-](?!\+\+|--).*\bexport\b/m;
+
+export interface DocsRelevance {
+  relevant: boolean;
+  reason: string;
+}
+
+/** The decision itself, separated from the `git` calls so it can be tested directly. */
+export function classifyDocsRelevance(paths: string[], diff: string): DocsRelevance {
+  const doc = paths.find((p) => DOC_PATH.test(p));
+  if (doc) return { relevant: true, reason: `documentation file changed (${doc})` };
+
+  const surface = paths.find((p) => SURFACE_PATH.test(p));
+  if (surface) return { relevant: true, reason: `declared interface changed (${surface})` };
+
+  if (EXPORT_CHANGE.test(diff)) return { relevant: true, reason: "an export was added or removed" };
+
+  return { relevant: false, reason: "diff touches no documented surface" };
+}
+
+/**
+ * Whether this branch's cumulative diff touches anything a reader of the
+ * docs would notice. Cheap (one `git diff`) and deterministic, so the
+ * documenter phase is triggered by evidence instead of running on every
+ * task — see `resolvePhase`.
+ */
+export async function docsRelevant(cwd: string, baseBranch: string): Promise<DocsRelevance> {
+  const names = await tryRun("git", ["diff", "--name-only", `${baseBranch}...HEAD`], cwd);
+  const paths = names.out.split("\n").map((p) => p.trim()).filter(Boolean);
+  if (paths.length === 0) return { relevant: false, reason: "no diff against base" };
+  const diff = await branchDiff(cwd, baseBranch);
+  return classifyDocsRelevance(paths, diff.out);
+}
+
 export async function captureBaseline(cwd: string, baseBranch: string, config: GateConfig): Promise<Baseline> {
   const tests = config.vitest ? await tryRun("npx", ["vitest", "run"], cwd) : SKIPPED;
   const diff = await branchDiff(cwd, baseBranch);

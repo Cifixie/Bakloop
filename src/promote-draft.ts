@@ -5,7 +5,7 @@ import { runAgent } from "./agent.js";
 import { Backlog } from "./backlog.js";
 import { backlogDir, loadProjects } from "./config.js";
 import { renderPrompt } from "./prompts.js";
-import { parseOwnerOutput } from "./spec.js";
+import { parseCriteriaOutput, parseOwnerOutput } from "./spec.js";
 import type { Task } from "./types.js";
 
 const run = promisify(execFile);
@@ -85,22 +85,39 @@ async function promoteOne(
   }
   const entry = projects[project]!;
 
-  console.info(`[owner] drafting description + acceptance criteria for "${draft.title}"...`);
-  const prompt = renderPrompt("owner", fakeTask(draftId, draft.title, draft.description));
-  const result = await runAgent({
+  const base = fakeTask(draftId, draft.title, draft.description);
+
+  console.info(`[owner] drafting description for "${draft.title}"...`);
+  const ownerResult = await runAgent({
     role: "owner",
     tools: [],
-    prompt,
+    prompt: renderPrompt("owner", base),
     cwd: entry.path,
   });
-  const { description, acceptanceCriteria } = parseOwnerOutput(result.text);
+  const { description, type: draftedType } = parseOwnerOutput(ownerResult.text);
+
+  // Two calls, not one, for the same reason the tick loop splits these into
+  // separate phases: the criteria role must read the description rather than
+  // remember having written it (see resolvePhase).
+  console.info("[criteria] drafting acceptance criteria + definition of done...");
+  const criteriaResult = await runAgent({
+    role: "criteria",
+    tools: [],
+    prompt: renderPrompt("criteria", { ...base, description }),
+    cwd: entry.path,
+  });
+  const { acceptanceCriteria, definitionOfDone } = parseCriteriaOutput(criteriaResult.text);
 
   console.info(`\n--- AI-drafted description ---\n${description}`);
   console.info("\n--- Acceptance criteria ---");
   if (acceptanceCriteria.length === 0) {
-    console.info("(none — the tick loop's owner phase will retry this once it's a task)");
+    console.info("(none — the tick loop's criteria phase will retry this once it's a task)");
   }
   acceptanceCriteria.forEach((ac, i) => console.info(`${i + 1}. ${ac}`));
+  if (definitionOfDone.length > 0) {
+    console.info("\n--- Definition of done ---");
+    definitionOfDone.forEach((item) => console.info(`- ${item}`));
+  }
 
   const proceed = (await rl.question("\nPromote with this content? [y/N] ")).trim().toLowerCase();
   if (proceed !== "y" && proceed !== "yes") {
@@ -108,7 +125,10 @@ async function promoteOne(
     return;
   }
 
-  const type = (await rl.question("Type (blank to skip): ")).trim();
+  const typeAnswer = (
+    await rl.question(`Type${draftedType ? ` [${draftedType}]` : " (blank to skip)"}: `)
+  ).trim();
+  const type = typeAnswer || draftedType || "";
   const priority = (await rl.question("Priority (blank to skip): ")).trim();
 
   const backlog = new Backlog(backlogDir());
@@ -119,6 +139,7 @@ async function promoteOne(
 
   const editArgs = ["task", "edit", created.id, "--project", project, "--description", description];
   for (const ac of acceptanceCriteria) editArgs.push("--ac", ac);
+  for (const item of definitionOfDone) editArgs.push("--dod", item);
   if (type) editArgs.push("--type", type);
   if (priority) editArgs.push("--priority", priority);
   if (labelProject) editArgs.push("--remove-label", `project:${labelProject}`);
@@ -159,9 +180,11 @@ function fakeTask(id: string, title: string, rawText: string): Task {
     parentTaskId: null,
     path: "",
     description: null,
+    type: null,
     dependencies: [],
     readiness: { isReady: true, isBlocked: false, blockingDependencies: [], missingDependencies: [] },
     acceptanceCriteria: [],
+    definitionOfDone: [],
     implementationPlan: null,
     implementationNotes: rawText || null,
     finalSummary: null,

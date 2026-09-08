@@ -59,6 +59,12 @@ export const runAgent: RunAgent = async (input) => {
     process.stdout.write(`\r[${input.role}] ${label}... ${secs}s, ${chars} chars   `);
   };
 
+  // Totals for the tick journal (src/journal.ts). Accumulated across every
+  // block in the call, since one tick may think and reply more than once.
+  const callStarted = Date.now();
+  let thinkingChars = 0;
+  let toolCalls = 0;
+
   const unsubscribe = agent.subscribe(async (event) => {
     if (event.type === "message_update") {
       const e = event.assistantMessageEvent;
@@ -75,6 +81,7 @@ export const runAgent: RunAgent = async (input) => {
           break;
         case "thinking_end": {
           const secs = ((Date.now() - started) / 1000).toFixed(0);
+          thinkingChars += e.content.length;
           const summary = await summarize(e.content);
           process.stdout.write(`\r[${input.role}] thought for ${secs}s: ${summary}\n`);
           break;
@@ -95,6 +102,7 @@ export const runAgent: RunAgent = async (input) => {
         }
       }
     } else if (event.type === "tool_execution_start") {
+      toolCalls += 1;
       console.info(`[${input.role}] tool ${event.toolName} ${JSON.stringify(event.args)}`);
     } else if (event.type === "tool_execution_end") {
       console.info(`[${input.role}] tool ${event.toolName} ${event.isError ? "failed" : "done"}`);
@@ -130,5 +138,14 @@ export const runAgent: RunAgent = async (input) => {
     .map((block) => block.text)
     .join("\n");
 
-  return { text };
+  return {
+    text,
+    metrics: {
+      promptChars: input.prompt.length,
+      outputChars: text.length,
+      thinkingChars,
+      toolCalls,
+      modelMs: Date.now() - callStarted,
+    },
+  };
 };

@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { runAgent } from "./agent.js";
 import { Backlog } from "./backlog.js";
 import { backlogDir, loadProjects, resolveProjectKey, stateDir } from "./config.js";
+import { createJournal } from "./journal.js";
 import { createLogStore } from "./log.js";
 import { renderPrompt } from "./prompts.js";
 import { tick } from "./tick.js";
@@ -28,6 +29,12 @@ async function main() {
   const backlog = new Backlog(backlogDir());
   const { loadLog, saveLog } = createLogStore(stateDir(project));
   const gateConfigPath = join(stateDir(project), "gates.json");
+  // Records every tick to `state/<project>/journal.db` for `npm run report`.
+  // `BAKLOOP_NO_TRANSCRIPTS=1` keeps the metrics but skips saving each
+  // prompt/output pair to disk.
+  const journal = createJournal(stateDir(project), {
+    transcripts: process.env.BAKLOOP_NO_TRANSCRIPTS !== "1",
+  });
 
   // Ctrl+C (or a `kill`) sets this instead of tearing the process down mid-tick:
   // the in-flight tick finishes — commits, gate results, and attempt log all
@@ -44,25 +51,44 @@ async function main() {
   process.on("SIGINT", requestStop);
   process.on("SIGTERM", requestStop);
 
+  // Last-resort backstop for a tick throwing something tick.ts's own
+  // per-task model-error handling doesn't cover (e.g. a bug, not a known
+  // local-model failure) — an unattended overnight run shouldn't die on
+  // one unexpected exception when other tasks in the queue are still fine.
+  // Bounded so a genuinely broken loop still gives up instead of spinning.
+  const MAX_CONSECUTIVE_CRASHES = 5;
+  let consecutiveCrashes = 0;
+
   try {
     for (;;) {
-      const result = await tick({
-        backlog,
-        repoCwd,
-        project,
-        baseBranch,
-        gateConfigPath,
-        runAgent,
-        loadLog,
-        saveLog,
-        renderPrompt,
-      });
+      let result: { done: boolean; note: string };
+      try {
+        result = await tick({
+          backlog,
+          repoCwd,
+          project,
+          baseBranch,
+          gateConfigPath,
+          runAgent,
+          loadLog,
+          saveLog,
+          renderPrompt,
+          journal,
+        });
+        consecutiveCrashes = 0;
+      } catch (err) {
+        consecutiveCrashes += 1;
+        console.error(`[main] tick threw (${consecutiveCrashes}/${MAX_CONSECUTIVE_CRASHES}):`, err);
+        if (consecutiveCrashes >= MAX_CONSECUTIVE_CRASHES || stopRequested) throw err;
+        continue;
+      }
       console.info(`[main] ${result.note}`);
       if (result.done || stopRequested) break;
     }
   } finally {
     process.off("SIGINT", requestStop);
     process.off("SIGTERM", requestStop);
+    journal.close();
     // Leave the working tree on the base branch, not mid-task, between runs.
     await run("git", ["checkout", baseBranch], { cwd: repoCwd }).catch(() => {});
   }
