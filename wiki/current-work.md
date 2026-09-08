@@ -5,6 +5,20 @@ History lives in git.
 
 ---
 
+**Just landed:** Replaced the `approved` label with a real status: `Ready for Work`, a new
+column in `backlog/config.yml`'s `statuses` list, sitting between `Waiting for Approval`
+and `In Progress`. A human now approves execution by moving the task there in the
+Backlog.md board instead of adding a label — same gate, same "only a human can start
+execution" guarantee (nothing in `tick.ts` or any role was granted new autonomy: the
+`Waiting for Approval → In Progress` transition was already made by `tick.ts` itself, not
+an agent), just visible as a kanban move rather than a label toggle. Touched:
+`src/types.ts` (`STATUS.readyForWork`), `src/setup.ts` (`PIPELINE_STATUSES`), `src/phase.ts`
+and `src/tick.ts` (swapped the `APPROVED_LABEL` check for a status check, `APPROVED_LABEL`
+removed), `src/routing.test.ts`, README, and the live config at
+`~/.bakloop/backlog/config.yml`. No task was mid-approval when this landed (no task
+currently carries the `approved` label), so no migration was needed. **D-002's text still
+describes the old label mechanism — needs a human rewrite**, see sign-off list below.
+
 **Working on:** Just landed a change to how roles are structured, what each one is allowed
 to see, and — new — what the loop records about itself. The through-line: bakloop already
 had deterministic routing and machine-only verdicts, but every role was handed every field
@@ -105,18 +119,46 @@ so that if it fails and blocks the container, the hard chain has already landed.
 
 **Needs your sign-off:**
 
-1. **D-007? The documenter writes files unsupervised.** D-002's rationale ("owner/
+1. **D-002 needs a rewrite, not a new number.** The mechanism it documents changed today
+   (label → `Ready for Work` status), but the decision itself — a human checkpoint between
+   plan and execution — didn't. Proposed replacement text for D-002's "Decision" paragraph:
+   > A task only leaves `Waiting for Approval` into executor once a human moves it to
+   > `Ready for Work` (a status in `backlog/config.yml`, visible as a column in the
+   > Backlog.md board). This is a start-up check only — once a tick is already `In
+   > Progress`, the status isn't re-checked mid-run (`src/phase.ts`). Superseded: the
+   > `approved` label this decision originally specified.
+2. **New decision proposal: capture the plan's base commit, and check it before executing.**
+   Motivated by a real risk flagged in conversation: a `Waiting for Approval` / `Ready for
+   Work` task's plan cites specific files/functions in the target repo; if sibling tasks
+   land on the shared branch (or `baseBranch` moves) while this one sits waiting, the
+   executor can be handed a plan describing code that no longer exists, with nothing
+   today to catch it (`src/gates.ts` only ever diffs against the branch's *current* HEAD at
+   gate-time, never a stored one; confirmed no staleness/freshness check exists anywhere in
+   `phase.ts`/`gates.ts`/`git-guard.ts`).
+   - **Capture:** planner runs `git rev-parse HEAD` in `repoCwd` when it writes the plan,
+     stored as a new marker in the task body (there's no custom-frontmatter mechanism to
+     reuse — `spec.ts` only regex-parses body sections like `AC_HEADER`/`SUBTASK_HEADER`,
+     and `parentTaskId` is a native Backlog.md CLI field, not a model for arbitrary
+     metadata — so this needs a new `## Planned at:` (or similar) section and parser).
+   - **Check:** before the executor's first tool call, diff the plan's cited files against
+     `git diff <capturedSHA>..HEAD`; if any changed, don't execute — route back to the
+     planner (or a new re-plan-on-drift phase) instead of running a stale plan.
+   - Open questions for the decision: what counts as "drift" (any touch to a cited file, or
+     only to the specific lines/functions the plan names?), and whether this is a `phase.ts`
+     routing input (needs a new `Signals` field, computed in `tick.ts` by `git diff`) or a
+     check inside the executor's own prompt/tooling.
+3. **D-007? The documenter writes files unsupervised.** D-002's rationale ("owner/
    architect/researcher/planner are read-only or write only to task metadata… running
    them unsupervised is low-risk") predates `documenter`, which writes real files with no
    label of its own. It's scoped deliberately (docs-only tool restriction; only ever runs
    inside a task a human already approved), which is why it was built this way rather than
    with a second approval gate — but that's a judgment call D-002's text doesn't cover.
-2. **D-008? Context is rationed per role, and roles don't read each other's accounts.**
+4. **D-008? Context is rationed per role, and roles don't read each other's accounts.**
    Item 1 above is a real architectural commitment, not an optimisation: it's why
    `criteria` is toolless and why the reviewer is kept off the progress log. Nothing in
    `wiki/decisions.md` currently says a role may be denied a field, so the next person to
    "helpfully" widen `CONTEXT` won't know they're crossing a line.
-3. **The split threshold is still the planner's judgement.** Item 4 only fires after a
+5. **The split threshold is still the planner's judgement.** Item 4 only fires after a
    machine failure has already happened. Deciding *up front* that a task is too big would
    need a computed size score (AC count, files named in the plan, plan step count) — which
    isn't derivable before the plan exists, so the honest version is a post-plan check that

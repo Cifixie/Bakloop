@@ -12,7 +12,7 @@ pipeline of **roles**, each one writing exactly one field on the task:
 
 ```
 Backlog → owner → criteria → architect/researcher (optional) → planner
-        → [human: approved label] → Waiting for Approval → executor (gated)
+        → Waiting for Approval → [human moves to Ready for Work] → executor (gated)
         → senior (on repeated failure) → documenter (when docs are affected)
         → reviewer → Review (human merges) → Done
 ```
@@ -61,8 +61,9 @@ tools physically refuse any path that isn't documentation (`README*`, `docs/**`,
 never trusting a model's own follow-through.
 
 Once a task has a description, acceptance criteria, and a plan, it's parked in
-**Waiting for Approval**. Execution never starts on its own — a human has to add the
-`approved` label first. From there the executor runs the gate loop (typecheck, lint,
+**Waiting for Approval**. Execution never starts on its own — a human has to move the
+task to **Ready for Work** first, a visible column move in the Backlog.md board rather
+than a label. From there the executor runs the gate loop (typecheck, lint,
 tests, diff checks) until the acceptance criteria are met or it's declared `Blocked`
 after repeated failure. A task only reaches `Review` once a human is expected to open
 and merge its PR — `bakloop` never merges, pushes, or marks anything `Done` itself.

@@ -10,6 +10,7 @@ const run = promisify(execFile);
 const PIPELINE_STATUSES = [
   STATUS.backlog,
   STATUS.waitingForApproval,
+  STATUS.readyForWork,
   STATUS.inProgress,
   STATUS.review,
   STATUS.blocked,

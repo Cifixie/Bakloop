@@ -12,9 +12,10 @@ These are peer constraints — no single one sits above the others.
 
 - **At most one task `In Progress` per project.** Enforced as a hard invariant checked
   every tick (`src/tick.ts`) — it throws rather than silently proceeding if violated.
-- **Execution never starts without a human `approved` label.** A task with a description,
-  acceptance criteria, and a plan is parked in `Waiting for Approval`; only a human moving
-  it forward (adding the label) lets the executor phase begin (`src/phase.ts`).
+- **Execution never starts without a human moving the task to `Ready for Work`.** A task
+  with a description, acceptance criteria, and a plan is parked in `Waiting for Approval`;
+  only a human moving it forward to `Ready for Work` — a status/column move, not a label —
+  lets the executor phase begin (`src/phase.ts`). See D-002.
 - **Gate verdicts are the only source of pass/fail — never the model's own summary.**
   `tsc`, `biome`, `vitest`, and a diff-vs-base check decide success (`src/gates.ts`); the
   model's final message text is never parsed for a verdict, for either the executor or the
@@ -90,7 +91,7 @@ one is already stale — fix it by deleting the copy, not by syncing them.
 
 **Human-only. Never do these, even if asked to "finish the task":**
 - promoting a decision from `Proposed` to `Accepted`
-- adding an `approved` label to a task on a human's behalf, merging a PR, or marking
+- moving a task to `Ready for Work` on a human's behalf, merging a PR, or marking
   anything `Done` other than a subtask on green gates (`src/tick.ts` does this
   automatically; a top-level task's `Done` is still human/GitHub-sync only)
 

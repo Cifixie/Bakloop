@@ -104,8 +104,10 @@ export const TASK_TYPES = [
 export const STATUS = {
   /** Raw wishlist: unrefined, or refined but no plan yet. Owner/architect/researcher/planner work here. */
   backlog: "Backlog",
-  /** Spec + plan complete; parked until a human adds the `approved` label. */
+  /** Spec + plan complete; parked until a human moves it to `Ready for Work`. */
   waitingForApproval: "Waiting for Approval",
+  /** A human has reviewed the plan and AC and approved execution — visible as a column move, not a label. */
+  readyForWork: "Ready for Work",
   /** Executor actively running the gate loop. At most one per project. */
   inProgress: "In Progress",
   /** A PR is open. Human-owned from here — the agent never touches it again. */
