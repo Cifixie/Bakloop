@@ -5,7 +5,57 @@ History lives in git.
 
 ---
 
-**Just landed:** Replaced the `approved` label with a real status: `Ready for Work`, a new
+**Just landed: nested splits are now supported, not just possible.** The `book` project's
+TASK-6.3 hit this live: its planner split it into 6 subtasks (TASK-6.3.1..6.3.6) even
+though TASK-6.3 was itself already a subtask of the epic TASK-6 — the previously-unbuilt
+"nested splits" case. Root cause was two compounding bugs, both fixed:
+
+1. `Backlog.createChild` (`src/backlog.ts`) never passed `--project` to `backlog task
+   create`. A child created without it has no `project` field at all, so it's invisible
+   to `Backlog.list(status, project)` — the project-scoped view `tick.ts` builds its whole
+   worldview from (`tick.ts:170`). `createChild` now takes `project` as a required
+   parameter and passes `--project` through.
+2. That invisibility silently corrupted `excludeInFlightContainers` (`tick.ts`): its "are
+   all this container's children Done" check filters the project-scoped `all` list for
+   `parentTaskId === t.id`. With the children invisible, that filter returned `[]`, and
+   `[].every(...)` is vacuously `true` in JS — so TASK-6.3 looked "all children done" 3
+   minutes after being split, with zero of them ever having run. It went straight to
+   `reviewer`, which correctly found none of the described work existed, wrote that as the
+   final summary, and the task landed in `Review` — terminal in `resolvePhase`, so bakloop
+   would never have looked at it again while its six children sat orphaned in `Backlog`
+   forever.
+3. Fixed a related latent bug on the branch side: `ensureTaskBranch` was called with
+   `task.parentTaskId ?? task.id` — one level only. A new `rootAncestorId` (`tick.ts`)
+   walks the full `parentTaskId` chain (throws on a cycle) so N levels of nesting all still
+   land on the true top-level ticket's branch, not whatever level they were split at.
+4. The two nested-split guards that existed specifically because this was unbuilt —
+   `!task.parentTaskId` in `phase.ts`'s `needs-split` routing and in `tick.ts`'s
+   auto-resplit-on-context-overflow condition — are removed. A subtask can now split again,
+   and a subtask that itself overflows can be auto-labelled `needs-split` too.
+
+**Live data repaired** (in `~/.bakloop`'s `book` project store, not code): TASK-6.3.1
+through TASK-6.3.6 had `--project book` set by hand; TASK-6.3 had its stale final summary
+cleared and status reset from `Review` to `Backlog` so it re-enters the pipeline and only
+reaches `reviewer` again once its children are genuinely `Done`. A `@system` comment on
+TASK-6.3 records why.
+
+**Needs your sign-off (new):**
+- **D-004's text is now wrong, not just narrow.** It says `ensureTaskBranch` keys off
+  `task.parentTaskId ?? task.id` and "covers exactly one level of nesting" — both no longer
+  true; see `rootAncestorId` above. Needs a human rewrite, not a new decision number.
+- **The "Nested splits are untested..." entry in `wiki/gotchas.md` is now resolved**, not
+  just narrowed — propose removing it per CLAUDE.md's "when a trap has become structurally
+  impossible, propose removing it." Left as-is for now since gotcha entries aren't mine to
+  rewrite/remove unilaterally.
+- **Still no test exercises a real two-level split end-to-end against the live CLI** —
+  `rootAncestorId` and the routing changes are covered by `routing.test.ts`, but nobody has
+  watched an actual `TASK.X.Y.Z` grandchild get created, planned, and executed by a real
+  tick loop yet. Worth doing before trusting this unattended on `TASK-6.3`'s now-repaired
+  children.
+
+---
+
+**Previously landed:** Replaced the `approved` label with a real status: `Ready for Work`, a new
 column in `backlog/config.yml`'s `statuses` list, sitting between `Waiting for Approval`
 and `In Progress`. A human now approves execution by moving the task there in the
 Backlog.md board instead of adding a label — same gate, same "only a human can start

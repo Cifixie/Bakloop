@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { classifyDocsRelevance } from "./gates.js";
-import { APPROVED_LABEL, NEEDS_SPLIT_LABEL, resolvePhase, type Signals } from "./phase.js";
+import { NEEDS_SPLIT_LABEL, resolvePhase, type Signals } from "./phase.js";
 import { parseCriteriaOutput, parseOwnerOutput } from "./spec.js";
-import { isContextOverflow } from "./tick.js";
-import { STATUS, type Comment, type Task } from "./types.js";
+import { isContextOverflow, rootAncestorId } from "./tick.js";
+import { STATUS, type Comment, type Task, type TaskSummary } from "./types.js";
 
 /**
  * Covers `resolvePhase`, which CLAUDE.md singles out as the one piece of
@@ -50,7 +50,6 @@ function task(over: Partial<Task> = {}): Task {
 const executing = (over: Partial<Task> = {}) =>
   task({
     status: STATUS.inProgress,
-    labels: [APPROVED_LABEL],
     acceptanceCriteriaCount: 1,
     acceptanceCriteriaCompleted: 0,
     ...over,
@@ -81,11 +80,16 @@ test("planner runs once the spec is complete, then parks for approval", () => {
   const unplanned = task({ implementationPlan: null });
   assert.equal(resolvePhase(unplanned, 0, NO_DOCS)?.role, "planner");
 
-  // Plan written but no `approved` label: execution never starts on field state alone.
+  // Plan written but still Waiting for Approval: execution never starts on field state alone.
   assert.equal(resolvePhase(task({ status: STATUS.waitingForApproval }), 0, NO_DOCS), null);
+  // A human has moved it to Ready for Work: now the later phases can proceed.
+  assert.equal(
+    resolvePhase(task({ status: STATUS.readyForWork, acceptanceCriteriaCount: 1 }), 0, NO_DOCS)?.role,
+    "executor",
+  );
 });
 
-test("needs-split beats an existing plan, and never applies to a subtask", () => {
+test("needs-split beats an existing plan, including for a subtask (nested split)", () => {
   // The plan is present and non-blank — the label still wins, because the
   // plan is exactly what turned out not to fit.
   const overflowed = task({ labels: [NEEDS_SPLIT_LABEL] });
@@ -93,9 +97,12 @@ test("needs-split beats an existing plan, and never applies to a subtask", () =>
   assert.equal(phase?.role, "planner");
   assert.match(phase!.reason, /needs-split/);
 
-  // Splitting a subtask again is the unbuilt nested-splits case.
-  const subtask = task({ labels: [NEEDS_SPLIT_LABEL, APPROVED_LABEL], parentTaskId: "TASK-2" });
-  assert.notEqual(resolvePhase(subtask, 0, NO_DOCS)?.reason, "needs-split label present");
+  // A subtask that itself overflows can be split again — nested splits are
+  // supported (see rootAncestorId in tick.ts for the branch side of this).
+  const subtask = task({ labels: [NEEDS_SPLIT_LABEL], status: STATUS.readyForWork, parentTaskId: "TASK-2" });
+  const subPhase = resolvePhase(subtask, 0, NO_DOCS);
+  assert.equal(subPhase?.role, "planner");
+  assert.match(subPhase!.reason, /needs-split/);
 });
 
 test("executor runs while criteria are incomplete; senior takes over on repeated failure", () => {
@@ -148,6 +155,36 @@ test("context overflow is distinguished from an ordinary transport failure", () 
   for (const message of ["ECONNRESET", "socket hang up", "500 Internal Server Error"]) {
     assert.equal(isContextOverflow(message), false, message);
   }
+});
+
+test("rootAncestorId walks a nested split all the way to the top-level task", () => {
+  const summary = (id: string, parentTaskId: string | null): TaskSummary => ({
+    id,
+    title: id,
+    status: STATUS.backlog,
+    priority: null,
+    assignees: [],
+    labels: [],
+    ordinal: 0,
+    acceptanceCriteriaCompleted: 0,
+    acceptanceCriteriaCount: 0,
+    isReady: true,
+    parentTaskId,
+  });
+
+  // TASK-6 -> TASK-6.3 -> TASK-6.3.1: a subtask split, then split again.
+  const all: TaskSummary[] = [
+    summary("TASK-6", null),
+    summary("TASK-6.3", "TASK-6"),
+    summary("TASK-6.3.1", "TASK-6.3"),
+  ];
+  assert.equal(rootAncestorId("TASK-6.3.1", all), "TASK-6");
+  assert.equal(rootAncestorId("TASK-6.3", all), "TASK-6");
+  assert.equal(rootAncestorId("TASK-6", all), "TASK-6");
+
+  // A cycle (data corruption) fails loudly instead of looping forever.
+  const cyclic: TaskSummary[] = [summary("A", "B"), summary("B", "A")];
+  assert.throws(() => rootAncestorId("A", cyclic), /Cycle detected/);
 });
 
 test("the documenter signal fires on docs, declared interfaces, and moved exports", () => {

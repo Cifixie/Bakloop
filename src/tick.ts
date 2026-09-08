@@ -9,7 +9,7 @@ import {
   type Baseline,
 } from "./gates.js";
 import type { Journal, TickOutcome, TickRecord } from "./journal.js";
-import { APPROVED_LABEL, NEEDS_SPLIT_LABEL, resolvePhase, selectTask } from "./phase.js";
+import { NEEDS_SPLIT_LABEL, resolvePhase, selectTask } from "./phase.js";
 import { parseCriteriaOutput, parseOwnerOutput, parsePlannerOutput } from "./spec.js";
 import { ROLE_TOOLS, STATUS, type Role, type Task, type TaskSummary } from "./types.js";
 
@@ -79,6 +79,28 @@ export function isContextOverflow(message: string): boolean {
 /** Ids of tasks that have at least one subtask, derived from a full project listing. */
 function containerIds(all: TaskSummary[]): Set<string> {
   return new Set(all.filter((t) => t.parentTaskId).map((t) => t.parentTaskId!));
+}
+
+/**
+ * Walks `parentTaskId` all the way up, not just one level, so a subtask of a
+ * subtask (a nested split — see D-004 and the nested-splits entry in
+ * wiki/gotchas.md) still lands on its top-level ancestor's branch instead of
+ * forking a new one at whatever level it was split. `all` must be the full
+ * project-scoped listing so every ancestor in the chain is resolvable.
+ */
+export function rootAncestorId(taskId: string, all: TaskSummary[]): string {
+  const byId = new Map(all.map((t) => [t.id, t]));
+  const seen = new Set<string>();
+  let current = taskId;
+  while (true) {
+    if (seen.has(current)) {
+      throw new Error(`Cycle detected in parentTaskId chain starting at ${taskId} (revisited ${current})`);
+    }
+    seen.add(current);
+    const parentId = byId.get(current)?.parentTaskId;
+    if (!parentId) return current;
+    current = parentId;
+  }
 }
 
 /**
@@ -197,8 +219,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
   if (inProgress.length === 1) {
     candidates = inProgress;
   } else {
-    const rfi = all.filter((t) => t.status === STATUS.waitingForApproval);
-    const approved = rfi.filter((t) => t.labels.includes(APPROVED_LABEL));
+    const approved = all.filter((t) => t.status === STATUS.readyForWork);
     candidates = approved.length > 0 ? approved : all.filter((t) => t.status === STATUS.backlog);
   }
   candidates = excludeInFlightContainers(candidates, containers, all);
@@ -206,10 +227,11 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
   if (!picked) return { done: true, outcome: "no-ready-tasks", note: "no ready tasks" };
 
   const task = await backlog.view(picked.id);
-  // Subtasks share their parent's branch — they're internal breakdown of one
-  // task, not separate reviewable units — so a bad attempt still isolates
-  // per top-level task, just not per subtask.
-  await ensureTaskBranch(repoCwd, baseBranch, task.parentTaskId ?? task.id);
+  // Subtasks share their top-level ancestor's branch — they're internal
+  // breakdown of one task, not separate reviewable units — so a bad attempt
+  // still isolates per top-level task, not per subtask, no matter how many
+  // levels of splitting produced it (see D-004, and rootAncestorId's doc).
+  await ensureTaskBranch(repoCwd, baseBranch, rootAncestorId(task.id, all));
   const log = await loadLog(task.id);
   // One cheap `git diff` so the documenter is triggered by evidence rather
   // than running on every task. Computed here, not in resolvePhase, so that
@@ -234,8 +256,8 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
 
   const isExecutor = phase.role === "executor";
   if (isExecutor && task.status !== STATUS.inProgress) {
-    // The one and only promotion out of Waiting for Approval — gated
-    // by resolvePhase already having required the approved label.
+    // The one and only promotion out of Ready for Work — gated
+    // by resolvePhase already having required that status.
     await backlog.setStatus(task.id, STATUS.inProgress);
   }
 
@@ -268,13 +290,14 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
     // The task didn't fit. That's a statement about the task's size, not
     // about its correctness, and decomposition is the answer to it — so
     // hand it back to the planner instead of spending the remaining
-    // retries re-sending a prompt that is still too big. Excluded: subtasks
-    // (splitting one again is the unbuilt nested-splits case, see
-    // wiki/gotchas.md) and tasks already carrying the label, so a split
-    // that didn't help can still reach the model-error ceiling.
+    // retries re-sending a prompt that is still too big. Nested splits (a
+    // subtask splitting again) are now supported — see rootAncestorId and
+    // Backlog.createChild's `project` propagation — so this isn't restricted
+    // to top-level tasks any more. Still excluded: a task that already has
+    // subtasks (already a container) or already carries the label, so a
+    // split that didn't help can still reach the model-error ceiling.
     const resplittable =
       isContextOverflow(message) &&
-      !task.parentTaskId &&
       task.subtasks.length === 0 &&
       !task.labels.includes(NEEDS_SPLIT_LABEL);
     if (resplittable) {
@@ -329,10 +352,10 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       if (parsed.kind === "split") {
         // Deliberately no approval gate here: splitting is planning, not
         // execution — the same reasoning that lets owner/planner run
-        // unapproved today. Each child still needs its own `approved`
-        // label before its own executor phase can start.
+        // unapproved today. Each child still needs a human to move it to
+        // `Ready for Work` before its own executor phase can start.
         for (const child of parsed.children) {
-          await backlog.createChild(task.id, child.title, {
+          await backlog.createChild(task.id, child.title, project, {
             description: child.description,
             acceptanceCriteria: child.acceptanceCriteria,
           });
@@ -357,7 +380,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
         return { done: false, outcome: "split-refused", note: `${task.id}: blocked — could not be split after context overflow` };
       }
       await backlog.setPlan(task.id, parsed.plan);
-      // Spec + plan complete: parked here until a human adds the approved label.
+      // Spec + plan complete: parked here until a human moves it to Ready for Work.
       await backlog.setStatus(task.id, STATUS.waitingForApproval);
       return { done: false, outcome: "plan-written", note: "plan written — waiting for approval" };
     }

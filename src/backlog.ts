@@ -121,13 +121,22 @@ export class Backlog {
    * Splits a too-large task into a subtask on the same branch (see branch.ts),
    * created via Backlog.md's native `--parent`. Returns the new task's id,
    * parsed from `backlog task create`'s plain-text confirmation line.
+   *
+   * `project` MUST be passed through explicitly — Backlog.md does not infer
+   * it from `--parent`. A child created without it has no `project` field at
+   * all, which makes it invisible to `Backlog.list(status, project)` (the
+   * project-scoped view `tick.ts` builds its whole worldview from) forever:
+   * it can never be selected, and any "are all my children done" check over
+   * the same scoped list vacuously passes with zero children in it. See the
+   * orphaned-nested-split gotcha in wiki/gotchas.md.
    */
   async createChild(
     parentId: string,
     title: string,
+    project: string,
     opts: { description?: string; acceptanceCriteria?: string[] } = {},
   ): Promise<string> {
-    const args = ["task", "create", title, "--parent", parentId, "--plain"];
+    const args = ["task", "create", title, "--parent", parentId, "--project", project, "--plain"];
     if (opts.description) args.push("--description", opts.description);
     for (const ac of opts.acceptanceCriteria ?? []) args.push("--ac", ac);
     const out = await this.cli(args);

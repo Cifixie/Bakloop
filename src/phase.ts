@@ -32,9 +32,6 @@ const authoredBy = (task: Task, role: Role): boolean =>
  */
 const hasDocumented = (task: Task): boolean => authoredBy(task, "documenter");
 
-/** A human adds this once they've reviewed a Waiting-for-Approval task's plan and AC — the only way execution can start. */
-export const APPROVED_LABEL = "approved";
-
 /**
  * Set by `tick.ts` when a task's own size is what broke the tick (a local
  * model refusing the call for context overflow). It forces the planner down
@@ -96,9 +93,11 @@ export function resolvePhase(task: Task, attempts: number, signals: Signals): Ph
 
   // Checked BEFORE the empty-plan test: a task sent back for splitting
   // usually already has a plan, and that plan is exactly the thing that
-  // turned out not to fit. Restricted to top-level tasks — splitting a
-  // subtask again is the unbuilt nested-splits case (see wiki/gotchas.md).
-  if (task.labels.includes(NEEDS_SPLIT_LABEL) && !task.parentTaskId) {
+  // turned out not to fit. Nested splits (splitting a subtask again) are
+  // supported — see rootAncestorId in tick.ts and Backlog.createChild's
+  // `project` propagation — so this is no longer restricted to top-level
+  // tasks.
+  if (task.labels.includes(NEEDS_SPLIT_LABEL)) {
     return { role: "planner", reason: `${NEEDS_SPLIT_LABEL} label present` };
   }
 
@@ -107,11 +106,12 @@ export function resolvePhase(task: Task, attempts: number, signals: Signals): Ph
   }
 
   // Spec + plan complete: this task is Waiting for Approval. Execution
-  // never STARTS on field state alone — a human must approve it first.
-  // Once it's already In Progress, later ticks (retries, senior escalation,
-  // the reviewer pass) proceed regardless — the gate is a start-up check,
-  // not something re-enforced on every tick of an execution in flight.
-  if (task.status !== STATUS.inProgress && !task.labels.includes(APPROVED_LABEL)) {
+  // never STARTS on field state alone — a human must move it to Ready for
+  // Work first. Once it's already In Progress, later ticks (retries, senior
+  // escalation, the reviewer pass) proceed regardless — the gate is a
+  // start-up check, not something re-enforced on every tick of an execution
+  // in flight.
+  if (task.status !== STATUS.inProgress && task.status !== STATUS.readyForWork) {
     return null;
   }
 
