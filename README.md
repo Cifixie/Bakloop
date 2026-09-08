@@ -21,7 +21,7 @@ Backlog → owner → criteria → architect/researcher (optional) → planner
 |---|---|---|
 | `owner` | description + type | none |
 | `criteria` | acceptance criteria + definition of done | none |
-| `architect` | notes (constraints), only when labeled `needs-architecture` | read-only |
+| `architect` | notes (constraints), when labeled `needs-architecture` or bracketing a split | read-only |
 | `researcher` | notes (findings), only when labeled `needs-research` | read + fetch |
 | `planner` | implementation plan, or a split into subtasks | read-only |
 | `executor` | files | read, write, edit, bash |
@@ -49,6 +49,19 @@ model, and a role that reads another role's account of the work inherits its fra
 Machine bookkeeping — gate failures, model-call failures, what the documenter did — goes
 to the task's comments instead, attributed to the role it came from. That keeps the
 executor's prompt from growing by one failure record per attempt.
+
+**A split doesn't create subtasks on the spot — `architect` has to write the interface
+contract first.** When the planner proposes splitting a task, `tick.ts` discards that
+proposal and labels the task `needs-architecture` instead, unless an architect contract
+already exists (`hasArchitectContract`, `src/phase.ts`). `architect` then names the exact
+shared signatures/resource IDs the subtasks are likely to need and which one should own
+creating each — this is the only cross-sibling context any subtask ever gets, since each
+one's own planner tick otherwise sees only its own task. Only then are children created,
+each seeded with that contract in its own `implementationNotes`. Once every child is Done,
+`architect` runs a second time (a distinctly-marked pass, `hasAlignmentCheck`) to check the
+finished siblings against that contract before the container can reach `reviewer`; on
+`DRIFT` the container is blocked for a human rather than reaching review looking clean. See
+D-007 in `wiki/decisions.md`.
 
 **`documenter` is triggered by the diff, not by the calendar.** After the gates go green,
 `src/gates.ts` checks whether the branch actually touched a documentation file, a
@@ -185,21 +198,25 @@ project is resolved from `ORC_REPO_CWD`/`cwd` instead.
 ## Adding tasks
 
 Two steps, kept deliberately separate: capture (raw, human-typed) and promotion (AI
-formats it into a real task, human reviews the result). Drafts are invisible to the tick
-loop — only real tasks feed it — so nothing here can ever be picked up half-formed.
+formats it into a real task). Drafts are invisible to the tick loop — only real tasks feed
+it — so nothing here can ever be picked up half-formed. Promotion itself is fully
+automatic, no prompts — the task lands in `Waiting for Approval` and still needs a human
+to move it to `Ready for Work` before the executor touches it (see D-002), so review
+happens once, against the full spec, not here.
 
 ```bash
 pnpm run new-draft bogi       # capture: title + pasted text -> a Backlog.md draft
 pnpm run promote-draft         # list drafts (omit the id to just see what's pending)
-pnpm run promote-draft DRAFT-3 bogi   # AI drafts description + AC, you review, then promote
+pnpm run promote-draft DRAFT-3 bogi   # AI drafts description + AC, then promotes immediately
 ```
 
 `new-draft` prompts for a title (leave it blank to have a lightweight local model name
 it — or paste something starting with a `# Heading` line and that's used for free) and a
 pasted description (end with a line containing just `.`). `promote-draft` runs the same
 `owner` and `criteria` prompts the tick loop itself uses, as two separate calls for the
-same reason the loop does, shows you the drafted description, acceptance criteria, and
-definition of done before doing anything, and lets you confirm type/priority.
+same reason the loop does, prints the drafted description, acceptance criteria, and
+definition of done, and promotes immediately — type comes from whatever `owner` drafted,
+priority is left unset, and either can be changed on the task afterward.
 
 The loop runs ticks until there's no ready work left in the project's lane, checking
 the working tree back out to the base branch on exit. State (attempt logs, detected

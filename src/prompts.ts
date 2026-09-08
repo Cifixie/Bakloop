@@ -23,6 +23,10 @@ function loadTemplate(name: string): string {
  */
 function templateFor(role: Role, task: Task): string {
   if (role === "planner" && task.labels.includes(NEEDS_SPLIT_LABEL)) return "planner-split";
+  // Same distinction tick.ts makes to pick the notes marker: a container
+  // (subtasks present) means this architect call is the post-split
+  // sibling-alignment pass, not the pre-split interface contract.
+  if (role === "architect" && task.subtasks.length > 0) return "architect-alignment";
   return role;
 }
 
@@ -64,7 +68,11 @@ const CONTEXT: Record<Role, ContextPolicy> = {
   // promote-draft's stand-in task) plus dependencies for scope.
   owner: { notes: true, dependencies: true },
   criteria: { description: true },
-  architect: { description: true, acceptanceCriteria: true, dependencies: true },
+  // `notes: true` matters for the alignment-check call specifically: it's
+  // how the architect sees the contract it wrote before the split, without
+  // a live parent lookup. Harmless for the pre-split call, where notes is
+  // always still empty.
+  architect: { description: true, acceptanceCriteria: true, dependencies: true, notes: true },
   researcher: { description: true, acceptanceCriteria: true, dependencies: true },
   planner: {
     description: true,

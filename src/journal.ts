@@ -62,6 +62,8 @@ export type TickOutcome =
   | "plan-written"
   | "split"
   | "split-refused"
+  | "split-pending-architecture"
+  | "alignment-drift-blocked"
   | "notes-appended"
   | "docs-updated"
   | "reviewed"

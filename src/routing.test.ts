@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { classifyDocsRelevance } from "./gates.js";
 import { NEEDS_SPLIT_LABEL, resolvePhase, type Signals } from "./phase.js";
-import { parseCriteriaOutput, parseOwnerOutput } from "./spec.js";
+import { parseAlignmentOutput, parseCriteriaOutput, parseOwnerOutput } from "./spec.js";
 import { isContextOverflow, rootAncestorId } from "./tick.js";
 import { STATUS, type Comment, type Task, type TaskSummary } from "./types.js";
 
@@ -135,11 +135,36 @@ test("a reviewed task is finished; terminal and blocked states are never re-ente
   assert.equal(resolvePhase(blockedByDeps, 0, NO_DOCS), null);
 });
 
-test("a container task skips implementation and goes to documenter/reviewer", () => {
+test("a container task skips implementation and goes to documenter/architect/reviewer", () => {
   const container = task({ subtasks: [{ id: "TASK-1.1", title: "child" }], description: null });
   // Description is null, but a container must not be routed to owner.
   assert.equal(resolvePhase(container, 0, DOCS)?.role, "documenter");
-  assert.equal(resolvePhase(container, 0, NO_DOCS)?.role, "reviewer");
+  // No alignment check yet: architect runs before reviewer, even with no docs signal.
+  assert.equal(resolvePhase(container, 0, NO_DOCS)?.role, "architect");
+  // One-shot, same pattern as hasDocumented: its own notes entry is the marker.
+  const checked = task({
+    subtasks: [{ id: "TASK-1.1", title: "child" }],
+    description: null,
+    implementationNotes: "**architect (alignment check):** looks fine",
+  });
+  assert.equal(resolvePhase(checked, 0, NO_DOCS)?.role, "reviewer");
+  // A pre-split contract's marker must not be mistaken for the alignment check's.
+  const onlyContract = task({
+    subtasks: [{ id: "TASK-1.1", title: "child" }],
+    description: null,
+    implementationNotes: "**architect:** pre-split constraints",
+  });
+  assert.equal(resolvePhase(onlyContract, 0, NO_DOCS)?.role, "architect");
+});
+
+test("parseAlignmentOutput requires an explicit first-line verdict, defaulting to drift", () => {
+  assert.equal(parseAlignmentOutput("ALIGNED\nChecked source-content.ts, one definition.").drift, false);
+  assert.equal(parseAlignmentOutput("DRIFT\nTwo incompatible getSourceContent signatures.").drift, true);
+  // Case-insensitive, and leading blank lines don't defeat the check.
+  assert.equal(parseAlignmentOutput("\n\naligned\nfine").drift, false);
+  // No parseable verdict on the first non-blank line: fail safe, not fail open.
+  assert.equal(parseAlignmentOutput("I think everything looks aligned here.").drift, true);
+  assert.equal(parseAlignmentOutput("").drift, true);
 });
 
 test("context overflow is distinguished from an ordinary transport failure", () => {

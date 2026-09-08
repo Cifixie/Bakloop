@@ -134,11 +134,16 @@ export class Backlog {
     parentId: string,
     title: string,
     project: string,
-    opts: { description?: string; acceptanceCriteria?: string[] } = {},
+    opts: { description?: string; acceptanceCriteria?: string[]; notes?: string } = {},
   ): Promise<string> {
     const args = ["task", "create", title, "--parent", parentId, "--project", project, "--plain"];
     if (opts.description) args.push("--description", opts.description);
     for (const ac of opts.acceptanceCriteria ?? []) args.push("--ac", ac);
+    // Seeds the child with the architect's interface contract (see
+    // hasArchitectContract in phase.ts) at birth, rather than requiring a
+    // live lookup of the parent — every sibling starts from the same shared
+    // shape without any new context-fetching machinery.
+    if (opts.notes) args.push("--notes", opts.notes);
     const out = await this.cli(args);
     const id = out.match(/^Task (\S+) -/m)?.[1];
     if (!id) throw new Error(`Could not parse new subtask id from create output:\n${out}`);

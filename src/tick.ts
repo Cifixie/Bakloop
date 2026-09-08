@@ -9,8 +9,8 @@ import {
   type Baseline,
 } from "./gates.js";
 import type { Journal, TickOutcome, TickRecord } from "./journal.js";
-import { NEEDS_SPLIT_LABEL, resolvePhase, selectTask } from "./phase.js";
-import { parseCriteriaOutput, parseOwnerOutput, parsePlannerOutput } from "./spec.js";
+import { hasArchitectContract, NEEDS_SPLIT_LABEL, resolvePhase, selectTask } from "./phase.js";
+import { parseAlignmentOutput, parseCriteriaOutput, parseOwnerOutput, parsePlannerOutput } from "./spec.js";
 import { ROLE_TOOLS, STATUS, type Role, type Task, type TaskSummary } from "./types.js";
 
 /** Attempt bookkeeping. Persisted to disk, not held in memory. */
@@ -350,14 +350,37 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       const forcedSplit = task.labels.includes(NEEDS_SPLIT_LABEL);
       const parsed = parsePlannerOutput(result.text);
       if (parsed.kind === "split") {
+        // No architect contract yet: don't create children off this
+        // proposal at all. Two siblings independently re-deriving a shared
+        // interface (the same file, incompatible signatures) is exactly the
+        // failure this gate exists to prevent — see hasArchitectContract and
+        // the split-alignment decision proposal in wiki/current-work.md.
+        // The proposal itself is discarded, not persisted: it's provisional,
+        // and the planner re-decides the split next tick with the contract
+        // in hand, informed by constraints it didn't have the first time.
+        if (!hasArchitectContract(task)) {
+          await backlog.comment(
+            task.id,
+            "planner",
+            `proposed a split, deferred pending an architect contract:\n${result.text}`,
+          );
+          await backlog.addLabel(task.id, "needs-architecture");
+          return {
+            done: false,
+            outcome: "split-pending-architecture",
+            note: `${task.id}: split proposed — routing through architect for an interface contract first`,
+          };
+        }
         // Deliberately no approval gate here: splitting is planning, not
         // execution — the same reasoning that lets owner/planner run
         // unapproved today. Each child still needs a human to move it to
         // `Ready for Work` before its own executor phase can start.
+        const contract = task.implementationNotes ?? "";
         for (const child of parsed.children) {
           await backlog.createChild(task.id, child.title, project, {
             description: child.description,
             acceptanceCriteria: child.acceptanceCriteria,
+            notes: contract,
           });
         }
         if (forcedSplit) await backlog.removeLabel(task.id, NEEDS_SPLIT_LABEL);
@@ -384,10 +407,36 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       await backlog.setStatus(task.id, STATUS.waitingForApproval);
       return { done: false, outcome: "plan-written", note: "plan written — waiting for approval" };
     }
-    case "architect":
+    case "architect": {
+      // A container (subtasks present) means this call is the post-split
+      // alignment pass, not the pre-split contract — see templateFor in
+      // prompts.ts, which picks the prompt on the same distinction.
+      const isAlignmentCheck = task.subtasks.length > 0;
+      const marker = isAlignmentCheck ? "architect (alignment check)" : "architect";
+      await backlog.appendNotes(task.id, `**${marker}:** ${result.text}`);
+      // One-shot per call site (hasArchitectContract / hasAlignmentCheck):
+      // clear the label so a task doesn't loop back into architect forever.
+      if (task.labels.includes("needs-architecture")) await backlog.removeLabel(task.id, "needs-architecture");
+      if (isAlignmentCheck) {
+        const { drift } = parseAlignmentOutput(result.text);
+        if (drift) {
+          // Block-on-drift was the deliberate choice (see decision proposal
+          // in wiki/current-work.md): a human resolves the mismatch before
+          // this container can reach reviewer, rather than relying on them
+          // to notice it inside a PR summary.
+          await backlog.setStatus(task.id, STATUS.blocked);
+          return {
+            done: false,
+            outcome: "alignment-drift-blocked",
+            note: `${task.id}: sibling drift detected — blocked for human review`,
+          };
+        }
+      }
+      return { done: false, outcome: "notes-appended", note: `${marker} notes appended` };
+    }
     case "researcher":
     case "senior":
-      // These three are the ONLY writers of implementationNotes: the field is
+      // These two are the other writers of implementationNotes: the field is
       // guidance for the executor, and stays small enough to send every tick
       // precisely because machine bookkeeping goes to comments instead.
       await backlog.appendNotes(task.id, `**${phase.role}:** ${result.text}`);

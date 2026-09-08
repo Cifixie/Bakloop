@@ -71,6 +71,28 @@ export function parseCriteriaOutput(text: string): {
   };
 }
 
+const ALIGNMENT_LINE = /^\s*(ALIGNED|DRIFT)\b/i;
+
+/**
+ * Parses the architect's post-split alignment verdict. Requires an explicit
+ * token on the first non-blank line, the same contract as `SPLIT_MARKER` and
+ * `TYPE_LINE` — not a prose scan, so a model can't accidentally trip it by
+ * discussing "drift" in passing.
+ *
+ * Defaults to `drift: true` when the marker is missing or unparseable: an
+ * architect that didn't follow the format is not evidence of alignment, and
+ * this check exists specifically so silence reads as "unverified," not
+ * "fine" (see D-00X — block-on-drift was the deliberate choice over
+ * informational-only).
+ */
+export function parseAlignmentOutput(text: string): { drift: boolean; report: string } {
+  const lines = text.split("\n");
+  const firstIdx = lines.findIndex((l) => l.trim() !== "");
+  const match = firstIdx === -1 ? null : lines[firstIdx]!.match(ALIGNMENT_LINE);
+  if (!match) return { drift: true, report: text.trim() };
+  return { drift: match[1]!.toUpperCase() === "DRIFT", report: text.trim() };
+}
+
 export interface PlannerSplit {
   title: string;
   description: string;

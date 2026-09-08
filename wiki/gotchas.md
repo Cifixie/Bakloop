@@ -6,23 +6,6 @@ Capped at ~15 entries — this file loads every session.
 
 ---
 
-## Nested splits are untested and can fragment the one-branch-per-ticket invariant
-
-**Symptom:** A subtask that itself gets split (its planner emits `SPLIT` instead of a
-plan) appears to work — `resolvePhase`'s container check applies generically, and
-`createChild`/`ensureTaskBranch` don't reject it — but the resulting grandchild subtasks
-commit to the *immediate* parent's branch, not the top-level ticket's.
-**Cause:** `ensureTaskBranch` keys off `task.parentTaskId ?? task.id` (see D-004 in
-`wiki/decisions.md`), which only looks one level up. A grandchild's `parentTaskId` points
-at the subtask that split it, not at the original top-level ticket, so its branch name
-diverges from the ticket's single branch.
-**Fix:** Treat nested splits as unsupported, not merely unverified. If the planner ever
-needs to split a subtask, resolve `ensureTaskBranch` to the *root* ancestor first (walk
-`parentTaskId` to its end) rather than assuming one level of nesting — and add a real test
-for a two-level split before relying on it.
-
----
-
 ## `git-guard.ts`'s push block is not a sandbox
 
 **Symptom:** Someone points at `src/git-guard.ts` as proof the executor "can't push."

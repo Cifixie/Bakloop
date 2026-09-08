@@ -33,6 +33,27 @@ const authoredBy = (task: Task, role: Role): boolean =>
 const hasDocumented = (task: Task): boolean => authoredBy(task, "documenter");
 
 /**
+ * Marker for the architect's pre-split interface contract (see D-00X,
+ * "Needs your sign-off" in wiki/current-work.md): `tick.ts` writes this
+ * before ever creating children from a planner split, so every sibling is
+ * seeded with the same shared shape instead of each independently
+ * reinventing it. One-shot per task, same pattern as `hasDocumented` — no
+ * dedicated field, so the notes entry itself is the record.
+ */
+export const hasArchitectContract = (task: Task): boolean =>
+  (task.implementationNotes ?? "").includes("**architect:**");
+
+/**
+ * Marker for the post-split sibling-alignment pass: a second, distinctly
+ * tagged architect call that runs once all of a container's children are
+ * Done, before the container is allowed to reach `reviewer`. Distinct from
+ * `hasArchitectContract` so the alignment check isn't skipped just because
+ * the pre-split contract already satisfied that marker.
+ */
+export const hasAlignmentCheck = (task: Task): boolean =>
+  (task.implementationNotes ?? "").includes("**architect (alignment check):**");
+
+/**
  * Set by `tick.ts` when a task's own size is what broke the tick (a local
  * model refusing the call for context overflow). It forces the planner down
  * its SPLIT branch on the next tick instead of letting the task die at the
@@ -62,6 +83,14 @@ export function resolvePhase(task: Task, attempts: number, signals: Signals): Ph
   if (task.subtasks.length > 0) {
     if (signals.docsRelevant && !hasDocumented(task)) {
       return { role: "documenter", reason: "all subtasks complete, documented surface changed" };
+    }
+    // A container never reaches reviewer on its children's word alone: one
+    // architect pass checks the finished siblings against the contract
+    // written before they existed, so drift between them (e.g. two children
+    // independently inventing incompatible shapes for the same shared file)
+    // surfaces before a human sees a clean-looking summary.
+    if (blank(task.finalSummary) && !hasAlignmentCheck(task)) {
+      return { role: "architect", reason: "all subtasks complete, verifying sibling alignment before review" };
     }
     if (blank(task.finalSummary)) {
       return { role: "reviewer", reason: "all subtasks complete, awaiting review" };
