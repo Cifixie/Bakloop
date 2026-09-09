@@ -249,8 +249,8 @@ the `book` duplication was found in the first place.
 
 **Context:** D-007 and D-008 try to *prevent* siblings from overlapping. Nothing detected
 it: the `book` duplication was found by a human reading fourteen task files by hand, which
-is not a check that runs. A role was proposed for this ("friendkeeper", `raw/insight.md`)
-— an agent that reads the whole task tree, finds overlaps, and tags `needs-replan`.
+is not a check that runs. A role was proposed for this — a "friendkeeper" agent that reads
+the whole task tree, finds overlaps, and tags `needs-replan`.
 
 **Decision:** Detect it deterministically instead. `findCollisions` (`src/overlap.ts`)
 extracts repo-relative paths from every task's description, plan, acceptance criteria and

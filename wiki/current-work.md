@@ -70,17 +70,35 @@ code, each carrying an `Amended` note explaining what changed and why. Nothing i
 
 1. **Reset the `book` task tree** (it predates D-007 and has no contracts), keeping
    `state/book/journal.db` for the 3.5-ticks-per-task baseline.
-2. **Re-plan a task that has to split** and read the resulting tree by hand against
-   `raw/notes.md`'s list of overlap symptoms: is any shared artifact specified twice? Does
-   any child re-state a sibling's scope? This is the observation that has been skipped
-   three times.
+2. **Re-plan a task that has to split**, then `npm run overlap book`. Zero blocking
+   collisions is the pass. Also read the tree once by hand for the symptoms the path check
+   cannot see: the same interface given two different signatures, a child re-stating a
+   sibling's scope in prose, or an expensive-to-reverse choice (a file extension, a key
+   layout) decided differently in two places. This observation has been skipped three
+   times.
 3. **Then** the original goal: exercise the _executor_ path against a real local model
    (`npm run report book` for ticks/completed once there's execution data).
 
 **Overlap is now detected, not eyeballed** (D-009). `npm run overlap <project>` reports
 every file claimed by two unrelated tasks in a tree; the same check runs automatically
-right after a split and blocks the container on a real collision. Verified against the
-current pre-reset `book` tree, where it independently reproduced the hand analysis in
-`raw/notes.md` — 7 blocking collisions, led by `apps/infra/lib/source-content.ts` claimed
-by five separate tasks. **Run it on the old tree once before resetting if you want the
-before/after on record;** after the reset it becomes the pass/fail for step 2 above.
+right after a split and blocks the container on a real collision.
+
+**Baseline, measured on the pre-reset `book` tree (2026-09-09) — this is the "before":**
+
+```
+7 blocking path collision(s) across 14 task(s)
+  apps/infra/lib/source-content.ts            TASK-1, 1.2, 1.4.2, 1.4.3, 1.4.4, 1.4.5, 2
+  apps/infra/lib/bookmark-digest-stack.ts     TASK-1.1, 1.3, 1.4.1, 1.4.3, 1.4.4, 3
+  apps/infra/lib/dynamo.ts                    TASK-1.2, 1.3, 1.5, 1.6
+  apps/infra/lambdas/fetch-source/handler.ts  TASK-1.4.3, 1.4.4, 3
+  apps/infra/lambdas/generate-digest/handler.ts  TASK-1.4.4, 1.4.5, 3
+  apps/infra/lambdas/ingest-url/handler.ts    TASK-1.3, 1.4.4, 3
+  packages/schemas/src/index.ts               TASK-2, 3
+plus 7 shared-by-convention (manifests and .md), not blocking
+```
+
+That tree was produced by the pre-D-007 one-shot split. Seven tasks each intended to write
+`source-content.ts`; six each intended to write the CDK stack. **The target after re-planning
+is zero blocking collisions** — anything above zero means D-007/D-008 didn't hold and the
+tree needs re-splitting, not executing. Recorded here rather than in `tmp/`, which is
+gitignored and will not survive the reset.
