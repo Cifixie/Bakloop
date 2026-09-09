@@ -5,6 +5,22 @@ History lives in git.
 
 ---
 
+**D-014, shipped this session: the human-approval gate (D-002) is retired.**
+`Waiting for Approval` and `Ready for Work` are collapsed into a single status, `ToDo`
+(`src/types.ts`'s `STATUS.todo`). The planner now parks a finished spec+plan directly in
+`ToDo`, and `resolvePhase`'s executor gate (`src/phase.ts`) accepts `ToDo` or
+`In Progress` with no human column-move required. `RESPEC` still resets a task's status
+(to `ToDo` now, not `Waiting for Approval`) so it re-enters the queue and routes back
+through `planner`, but that reset no longer re-imposes any human checkpoint — it's just
+queue bookkeeping. Typechecked and unit-tested (`routing.test.ts`, including a new
+defensive regression test confirming a plan-bearing task at `Blocked`/`Review`/`Done`/
+`Backlog` still never routes to `executor`). **Deliberately not migrated:** `book`'s
+three existing tasks (`task-1`, `task-2.1`, `task-3`) are still sitting at the
+now-retired `Waiting for Approval` status string, which no longer appears in
+`config.yml` after the next `npm run setup` — they need a manual
+`backlog task edit <id> -s "ToDo"` before they're eligible to run again. See D-014 in
+`wiki/decisions.md`.
+
 **D-007/D-008 (sibling overlap prevention) are built, tested, and now observed running**
 on the `book` project: a fresh planner run produced three top-level tasks — TASK-1 (S3
 source of truth), TASK-2 (extraction bridge, split into five children under an architect
@@ -41,14 +57,15 @@ was "AC met + gates green," a compile/lint/test bar, not a correctness one. `cri
 (`src/phase.ts`/`src/tick.ts`) now sits between the two for every project, autonomous or
 not, and answers `SHIP` (proceeds to reviewer), `CHANGES` (specific feedback, back to
 executor, capped at `MAX_CRITIC_ROUNDS`=3 before blocking for a human), or `RESPEC`
-(clears the plan, resets to `Waiting for Approval` — re-imposes D-002's human-approval
-gate before execution resumes). Required a small, deliberate reorder in `resolvePhase`
+(clears the plan, resets to `ToDo` — routes back through `planner` before execution can
+resume; see D-014, which retired the human-approval gate this used to re-impose).
+Required a small, deliberate reorder in `resolvePhase`
 (moving `attempts >= 2`'s senior-escalation check inside the `!acDone` branch) to stop a
 legitimate critic/executor revision cycle from getting silently stranded on the
 read-only `senior` role — see D-013 and its gotchas.md entry for the residual, narrow
 edge case left open. Typechecked, unit-tested (5 new tests in `routing.test.ts`), and
 manually verified end-to-end against a scratch repo with a stubbed model: the full
-`SHIP`/`CHANGES` cycle, `RESPEC` correctly requiring fresh human approval, and the
+`SHIP`/`CHANGES` cycle, `RESPEC` correctly routing back through `planner`, and the
 `MAX_CRITIC_ROUNDS` ceiling blocking on the 4th `CHANGES` verdict without ever
 misrouting to `senior` despite `attempts` climbing to 4 in the process.
 
@@ -56,8 +73,9 @@ misrouting to `senior` despite `attempts` climbing to 4 in the process.
 against scratch repos, but neither has been run through a real `npm start` loop against
 a live local model end to end together — worth doing once, registering a throwaway repo
 by URL, to see a real model's `critic` output land correctly. Separately, `book` itself
-is registered as a supervised (non-autonomous) project — TASK-1 is unblocked and safe to
-move to `Ready for Work` now that TASK-3 depends on it; TASK-2 is currently
+is registered as a supervised (non-autonomous) project — TASK-1 is unblocked, but still
+needs the manual `ToDo` migration noted above (D-014) before the executor will pick it
+up directly, now that TASK-3 depends on it; TASK-2 is currently
 `Blocked`/`needs-replan` from D-009's automatic post-split check on the
 TASK-2.4/TASK-2.5 `lambdas/extraction/handler.ts` finding, which looks like a false
 positive (2.4 creates the handler; 2.5 only points a CDK `entry` at its path) — decide

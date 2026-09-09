@@ -191,13 +191,12 @@ export function resolvePhase(task: Task, attempts: number, signals: Signals): Ph
     return { role: "planner", reason: "no implementation plan" };
   }
 
-  // Spec + plan complete: this task is Waiting for Approval. Execution
-  // never STARTS on field state alone — a human must move it to Ready for
-  // Work first. Once it's already In Progress, later ticks (retries, senior
-  // escalation, the reviewer pass) proceed regardless — the gate is a
-  // start-up check, not something re-enforced on every tick of an execution
-  // in flight.
-  if (task.status !== STATUS.inProgress && task.status !== STATUS.readyForWork) {
+  // Spec + plan complete: this task is in ToDo. The executor is free to
+  // pick it up on the very next tick — see D-014 (supersedes D-002, which
+  // required a human to move it here first). This check only guards against
+  // a plan-bearing task sitting somewhere else entirely (Review, Blocked,
+  // Done) ever routing to executor; it is not a human gate.
+  if (task.status !== STATUS.inProgress && task.status !== STATUS.todo) {
     return null;
   }
 

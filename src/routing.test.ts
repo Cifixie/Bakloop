@@ -90,17 +90,21 @@ test("spec phases: owner writes the description, criteria writes the AC — sepa
   assert.equal(resolvePhase(noAc, 0, NO_DOCS)?.role, "criteria");
 });
 
-test("planner runs once the spec is complete, then parks for approval", () => {
+test("planner runs once the spec is complete, then parks in ToDo for execution", () => {
   const unplanned = task({ implementationPlan: null });
   assert.equal(resolvePhase(unplanned, 0, NO_DOCS)?.role, "planner");
 
-  // Plan written but still Waiting for Approval: execution never starts on field state alone.
-  assert.equal(resolvePhase(task({ status: STATUS.waitingForApproval }), 0, NO_DOCS), null);
-  // A human has moved it to Ready for Work: now the later phases can proceed.
+  // Plan written, parked at ToDo: the executor can proceed immediately, no human move.
   assert.equal(
-    resolvePhase(task({ status: STATUS.readyForWork, acceptanceCriteriaCount: 1 }), 0, NO_DOCS)?.role,
+    resolvePhase(task({ status: STATUS.todo, acceptanceCriteriaCount: 1 }), 0, NO_DOCS)?.role,
     "executor",
   );
+});
+
+test("a plan-bearing task outside ToDo/In Progress never routes to executor", () => {
+  for (const status of [STATUS.blocked, STATUS.review, STATUS.done, STATUS.backlog]) {
+    assert.equal(resolvePhase(task({ status, acceptanceCriteriaCount: 1 }), 0, NO_DOCS), null);
+  }
 });
 
 test("needs-split beats an existing plan, including for a subtask (nested split)", () => {
@@ -113,7 +117,7 @@ test("needs-split beats an existing plan, including for a subtask (nested split)
 
   // A subtask that itself overflows can be split again — nested splits are
   // supported (see rootAncestorId in tick.ts for the branch side of this).
-  const subtask = task({ labels: [NEEDS_SPLIT_LABEL], status: STATUS.readyForWork, parentTaskId: "TASK-2" });
+  const subtask = task({ labels: [NEEDS_SPLIT_LABEL], status: STATUS.todo, parentTaskId: "TASK-2" });
   const subPhase = resolvePhase(subtask, 0, NO_DOCS);
   assert.equal(subPhase?.role, "planner");
   assert.match(subPhase!.reason, /needs-split/);

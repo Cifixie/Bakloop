@@ -320,15 +320,15 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
     }
   }
 
-  // Approved execution work always comes first; backlog spec/plan work is
-  // filler that keeps the Waiting-for-Approval queue stocked whenever
-  // there's nothing greenlit to actually build yet.
+  // Execution-ready work always comes first; backlog spec/plan work is
+  // filler that keeps the ToDo queue stocked whenever there's nothing to
+  // actually build yet.
   let candidates: TaskSummary[];
   if (inProgress.length === 1) {
     candidates = inProgress;
   } else {
-    const approved = all.filter((t) => t.status === STATUS.readyForWork);
-    candidates = approved.length > 0 ? approved : all.filter((t) => t.status === STATUS.backlog);
+    const ready = all.filter((t) => t.status === STATUS.todo);
+    candidates = ready.length > 0 ? ready : all.filter((t) => t.status === STATUS.backlog);
   }
   candidates = excludeInFlightContainers(candidates, containers, all);
   const picked = selectTask(candidates);
@@ -364,8 +364,8 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
 
   const isExecutor = phase.role === "executor";
   if (isExecutor && task.status !== STATUS.inProgress) {
-    // The one and only promotion out of Ready for Work — gated
-    // by resolvePhase already having required that status.
+    // The one and only promotion out of ToDo — gated by resolvePhase
+    // already having required that status.
     await backlog.setStatus(task.id, STATUS.inProgress);
   }
 
@@ -503,10 +503,10 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
             note: `${task.id}: split proposed — routing through architect for an interface contract first`,
           };
         }
-        // Deliberately no approval gate here: splitting is planning, not
-        // execution — the same reasoning that lets owner/planner run
-        // unapproved today. Each child still needs a human to move it to
-        // `Ready for Work` before its own executor phase can start.
+        // Deliberately no gate here either: splitting is planning, not execution
+        // — the same reasoning that lets owner/planner run unapproved today. Each
+        // child still needs its own planner pass (blank plan -> planner) before it
+        // reaches `ToDo` and becomes eligible for its own executor phase.
         const contract = task.implementationNotes ?? "";
         // Chain each child on its immediate predecessor. Both planner
         // prompts already ask for subtasks "in the order they should be
@@ -547,7 +547,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
           await backlog.addLabel(task.id, NEEDS_REPLAN_LABEL);
           // Same deterministic-stop treatment as split-refused and
           // alignment-drift: a guaranteed double-write earns a human look.
-          // Children stay unpromoted (D-002) so none of them can execute.
+          // Children stay blocked so none of them can execute.
           await backlog.setStatus(task.id, STATUS.blocked);
           return {
             done: false,
@@ -574,9 +574,10 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
         return { done: false, outcome: "split-refused", note: `${task.id}: blocked — could not be split after context overflow` };
       }
       await backlog.setPlan(task.id, parsed.plan);
-      // Spec + plan complete: parked here until a human moves it to Ready for Work.
-      await backlog.setStatus(task.id, STATUS.waitingForApproval);
-      return { done: false, outcome: "plan-written", note: `${task.id}: plan written — waiting for approval` };
+      // Spec + plan complete: parked in ToDo, ready for the executor to pick
+      // up directly — no human move required (see D-014).
+      await backlog.setStatus(task.id, STATUS.todo);
+      return { done: false, outcome: "plan-written", note: `${task.id}: plan written — ready for execution` };
     }
     case "architect": {
       // A container (subtasks present) means this call is the post-split
@@ -657,10 +658,12 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       if (verdict === "respec") {
         await backlog.comment(task.id, "critic", report);
         await backlog.setPlan(task.id, "");
-        // Blank plan alone would let planner run immediately regardless of
-        // status — this explicit reset is what actually re-imposes D-002's
-        // human-approval gate before execution can resume.
-        await backlog.setStatus(task.id, STATUS.waitingForApproval);
+        // Blank plan alone would already route to planner regardless of
+        // status, but resetting status back to ToDo here keeps a re-spec'd
+        // task in the same normal queue as any other backlog item once
+        // planning finishes — no gate to re-impose anymore (see D-014,
+        // supersedes D-002).
+        await backlog.setStatus(task.id, STATUS.todo);
         return { done: false, outcome: "critic-respec", note: `${task.id}: critic requested a re-spec` };
       }
 

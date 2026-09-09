@@ -56,7 +56,7 @@ different thing entirely, and always has been.
 ## D-002 — Execution requires a human moving the task to `Ready for Work`
 
 **Date:** 2026-09-07
-**Status:** Accepted
+**Status:** Superseded by D-014
 
 **Context:** Owner, architect, researcher, and planner roles are read-only or write only
 to task metadata — running them unsupervised is low-risk. The executor role runs
@@ -363,9 +363,9 @@ caught it — nothing in the loop itself did. See `wiki/current-work.md` for the
 this correctly for the whole tree when run by hand — the question is only *when* it runs
 automatically. Two shapes, not mutually exclusive:
 
-1. Run it against the whole project tree whenever a task is promoted to `Waiting for
-   Approval` (or moved to `Ready for Work`), not only right after a split. Cheap, but a
-   collision found this late still means one of two already-planned tasks needs replanning.
+1. Run it against the whole project tree whenever a task is promoted to `ToDo`, not only
+   right after a split. Cheap, but a collision found this late still means one of two
+   already-planned tasks needs replanning.
 2. Give the planner/architect visibility into *other top-level tasks* in the project, not
    just its own tree's siblings — i.e. extend `SiblingScope` (or a variant of it) to the
    whole project rather than one root ancestor. Prevents the collision from being planned
@@ -477,11 +477,12 @@ is far more likely a formatting slip than a genuine "the whole plan is wrong" fi
   its own counter, `AttemptLog.criticRounds`, capped at `MAX_CRITIC_ROUNDS` (3); beyond
   that the task blocks (`NEEDS_HUMAN_REVIEW_LABEL`, purely informational like
   `NEEDS_MANUAL_MERGE_LABEL`).
-- `RESPEC` clears `implementationPlan` and resets `status` to `Waiting for Approval` —
-  blank-plan routing alone would let `planner` run immediately regardless of status;
-  this explicit reset is what actually re-imposes D-002's human-approval gate before
-  execution can resume. Verified end-to-end: a `RESPEC`'d task sits at `Waiting for
-  Approval` and does not resume without a human moving it back.
+- `RESPEC` clears `implementationPlan` and resets `status` to `ToDo` — blank-plan
+  routing alone would already route to `planner` regardless of status, but the reset
+  keeps a re-spec'd task in the normal queue rather than wherever `critic` left it.
+  Verified end-to-end: a `RESPEC`'d task returns to `planner`, and only reaches
+  `executor` again once a fresh plan is written (see D-014, which retired the
+  human-approval gate this bullet used to describe).
 - A **container** (subtasks present) has no single executor to hand `CHANGES` feedback
   to, so it gets a binary gate: `SHIP` proceeds, anything else reuses `NEEDS_REPLAN_LABEL`
   + `STATUS.blocked` — the exact pattern `DRIFT` already uses.
@@ -519,3 +520,38 @@ critic-round successes) could still, in principle, hit an in-between tick where
 `acDone` reads false and `attempts` is already high enough to escalate to `senior` mid-
 cycle. Safe (soft-halts for a human, matching `senior`'s existing semantics) and rare,
 not silently wrong — not worth a second parallel counter for a case this narrow.
+
+---
+
+## D-014 — Retire D-002: `ToDo` replaces `Waiting for Approval` + `Ready for Work`, no human gate
+
+**Date:** 2026-09-09
+**Status:** Accepted
+
+**Context:** D-002 required a human to move a spec+plan'd task from `Waiting for
+Approval` to `Ready for Work` before the executor phase could begin, on the reasoning
+that the executor is the only role with real read/write/edit/bash access to a target
+repo and was judged too risky to leave fully unsupervised. In practice this added a
+second status purely to hold a human checkpoint, and the user has decided to run bakloop
+fully autonomously through planning and execution — the human review that matters now
+happens at `Review` (PR merge) and, for `autonomous: true` projects, not even there.
+
+**Decision:** Collapse `waitingForApproval` and `readyForWork` into a single status,
+`todo` (`"ToDo"`). The planner parks a finished spec+plan directly in `ToDo`
+(`src/tick.ts`'s planner case). `resolvePhase`'s executor gate (`src/phase.ts`) accepts
+`ToDo` or `In Progress` — the same shape as before, just one fewer status to move
+between. No human action is required anywhere between planning and execution starting.
+
+**Consequences:** The loop can now make progress on any spec+plan'd task with nothing
+left to do but wait its turn — no more stalling on an un-moved column. The cost D-002
+was accepted for (an executor running unsupervised) is now accepted as the default,
+not a carve-out; the only remaining human checkpoints in the default pipeline are the
+`Review` merge and `critic`'s `MAX_CRITIC_ROUNDS`/container-blocked backstops, plus
+whatever gates (`tsc`/`biome`/`vitest`/diff checks) `src/gates.ts` enforces regardless.
+Supersedes D-002.
+
+**Migration note:** existing tasks already sitting at the old `Waiting for Approval` or
+`Ready for Work` status strings are not touched by this change — those statuses no
+longer appear in a freshly-run `npm run setup`'s `config.yml`, so any task left at one
+of them needs a manual `backlog task edit <id> -s "ToDo"` before it becomes eligible
+again.

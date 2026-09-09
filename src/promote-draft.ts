@@ -17,9 +17,9 @@ const run = promisify(execFile);
  * acceptance criteria, prints them, and promotes fully automatically — no
  * interactive prompts anywhere in this path. Type is whatever `owner`
  * drafted; priority is left unset (a human can set either on the task
- * afterward). The task still lands in `Waiting for Approval` and can't
- * reach the executor until a human moves it to `Ready for Work` (D-002),
- * so review happens there, against the full spec, not here.
+ * afterward). The task still lands in `ToDo` and is picked up by the
+ * executor on its own next tick — no human step in between (see D-014) —
+ * so review, if wanted, has to happen before promotion, not after.
  *
  * `tsx src/promote-draft.ts --all` loops this over every existing draft in
  * one run.

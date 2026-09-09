@@ -2,7 +2,7 @@
 
 A local, backlog-driven agent loop that turns raw [Backlog.md](https://github.com/MrLesk/Backlog.md)
 tickets into reviewed, branch-isolated pull requests — running entirely against a
-local model, with a human approval gate between planning and execution.
+local model.
 
 ## How it works
 
@@ -12,15 +12,15 @@ pipeline of **roles**, each one writing exactly one field on the task:
 
 ```
 Backlog → owner → criteria → architect/researcher (optional) → planner
-        → Waiting for Approval → [human moves to Ready for Work] → executor (gated)
+        → ToDo → executor (gated)
         → senior (on repeated failure) → documenter (when docs are affected)
         → critic (SHIP/CHANGES/RESPEC) → reviewer → Review (human merges) → Done
 ```
 
 `critic` can push back: `CHANGES` sends the task back to `executor` with specific
 feedback (capped, then blocks for a human); `RESPEC` clears the plan and resets the
-task to `Waiting for Approval` — a fresh human approval is required before execution
-resumes. See D-013 in `wiki/decisions.md`.
+task to `ToDo`, which routes it back through `planner` before it's eligible for
+execution again. See D-013 in `wiki/decisions.md`.
 
 | Role | Writes | Tools |
 |---|---|---|
@@ -80,9 +80,8 @@ tools physically refuse any path that isn't documentation (`README*`, `docs/**`,
 never trusting a model's own follow-through.
 
 Once a task has a description, acceptance criteria, and a plan, it's parked in
-**Waiting for Approval**. Execution never starts on its own — a human has to move the
-task to **Ready for Work** first, a visible column move in the Backlog.md board rather
-than a label. From there the executor runs the gate loop (typecheck, lint,
+**ToDo** and picked up by the executor directly, no human step in between (see D-014,
+which supersedes the earlier human-approval gate, D-002). From there the executor runs the gate loop (typecheck, lint,
 tests, diff checks) until the acceptance criteria are met or it's declared `Blocked`
 after repeated failure. A task only reaches `Review` once a human is expected to open
 and merge its PR. `bakloop` never pushes, anywhere, unconditionally (`git-guard.ts`,
@@ -92,7 +91,7 @@ shipped the diff (D-013). Every other project keeps this paragraph exactly as wr
 
 If a task is too large for one executor pass, the planner can split it into subtasks
 (Backlog.md's `--parent`) instead of writing a plan. Subtasks run the full pipeline
-independently — including their own approval gate — but share their top-level
+independently but share their top-level
 ancestor's branch, so many subtasks still add up to one PR. A subtask finalizes to `Done` itself once its
 gates go green (no separate review); the parent only reaches `documenter`/`reviewer`
 once every subtask is `Done`, and turns `Blocked` immediately if any subtask does.
@@ -176,7 +175,7 @@ npm run setup   # tsx src/setup.ts
 
 This runs `backlog init` non-interactively under `$BAKLOOP_HOME`, with its own local
 git history (never a GitHub remote), and sets the board's statuses/columns to
-bakloop's pipeline (`Backlog`, `Waiting for Approval`, `In Progress`, `Review`,
+bakloop's pipeline (`Backlog`, `ToDo`, `In Progress`, `Review`,
 `Blocked`, `Done` — see `src/types.ts`'s `STATUS`).
 
 Register each repo you want `bakloop` to drive against a project key (this also
@@ -239,9 +238,8 @@ cleanly (same path as Ctrl+C) once the charge drops to `BAKLOOP_BATTERY_FLOOR` p
 Two steps, kept deliberately separate: capture (raw, human-typed) and promotion (AI
 formats it into a real task). Drafts are invisible to the tick loop — only real tasks feed
 it — so nothing here can ever be picked up half-formed. Promotion itself is fully
-automatic, no prompts — the task lands in `Waiting for Approval` and still needs a human
-to move it to `Ready for Work` before the executor touches it (see D-002), so review
-happens once, against the full spec, not here.
+automatic, no prompts — the task lands in `ToDo` and is picked up by the executor
+directly (see D-014), so review, if wanted, has to happen before promotion, not after.
 
 ```bash
 pnpm run new-draft bogi       # capture: title + pasted text -> a Backlog.md draft
