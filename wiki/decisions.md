@@ -287,3 +287,35 @@ the shared accessor module that four tasks each intended to create.
 Exempting all `.md` means a genuine documentation conflict between two tasks is reported
 and not blocked. That is deliberate — this check exists to stop broken builds — but if doc
 clobbering turns out to matter, the exemption is the thing to revisit, not the extractor.
+
+---
+
+## D-010 — The loop holds a `caffeinate -i` for its lifetime and stops at a battery floor
+
+**Date:** 2026-09-09
+**Status:** Accepted
+
+**Context:** `main.ts`'s `for (;;)` loop has no pacing between ticks — an unattended,
+possibly overnight run against a local model is just one long-lived process. Two
+machine-level failure modes had no handling: macOS idle-sleeps a machine with no held
+power assertion, and a run left going on battery has no floor and will flatten it.
+
+**Decision:** `src/power.ts` adds `startCaffeinate()` (spawns `caffeinate -i -w <pid>` for
+the process's lifetime, released on the normal stop path via its returned stop function
+and automatically via `-w` on `kill -9`) and `readBatteryState()` (parses `pmset -g batt`
+into `{ percent, onAcPower }`, tolerant of the charge-state word and time-remaining field
+since both vary by OS version). `main.ts` checks the battery once per iteration boundary,
+before starting a tick — same reasoning as D-006's `stopRequested`: a tick is one model
+call and shouldn't be torn in half. On battery, once `percent <= BAKLOOP_BATTERY_FLOOR`
+(default `20`; `0` disables), the loop **stops cleanly** — the same `break` path as
+Ctrl+C, through the existing `finally` (signal handlers off, journal closed, working tree
+back to `baseBranch`) — not a pause-and-resume. `BAKLOOP_NO_CAFFEINATE=1` opts out of the
+caffeinate child; both env vars follow the existing `BAKLOOP_HOME`/`BAKLOOP_PROJECT` style,
+not a `projects.json` field, since this is a machine concern, not a per-project one.
+
+**Consequences:** `caffeinate -i` prevents idle sleep only, not lid-close sleep on battery
+— see the gotchas.md entry. The battery check has tick-boundary granularity, not mid-tick,
+so the loop can stop a few points under the nominal floor; the default (`20`) has headroom
+for that. Stopping cleanly rather than pausing means a run left overnight on battery ends
+instead of waiting to be plugged back in — deliberate, matching D-006's preference for a
+clean, well-understood stop boundary over added state-machine complexity.

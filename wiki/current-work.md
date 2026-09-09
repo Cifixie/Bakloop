@@ -5,6 +5,14 @@ History lives in git.
 
 ---
 
+**Unrelated, small, done:** the loop now holds a `caffeinate -i` for its lifetime and
+stops cleanly at a battery floor (default 20%, `BAKLOOP_BATTERY_FLOOR`). See D-010,
+`src/power.ts`. Typechecked, unit-tested (`src/power.test.ts`), and manually verified
+(caffeinate process spawns/dies correctly; `parseBatteryState` checked against real
+`pmset -g batt` output). Not yet observed stopping a real `npm start` loop at the floor —
+that would require actually draining a laptop or running with real battery near the
+threshold, which wasn't done.
+
 **Status:** the overlap-in-subtasks problem has three distinct causes; two are now fixed
 deterministically and one is built but **still never observed running**.
 

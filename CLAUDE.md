@@ -120,7 +120,10 @@ framework is installed, and adding one needs a reason.** Coverage is deliberatel
 it covers `src/phase.ts`'s routing table plus the pure functions that feed it
 (`classifyDocsRelevance`, `isContextOverflow`, the `spec.ts` parsers). Routing is the one
 piece of logic with no other verification signal — a bad choice there corrupts the loop
-silently instead of failing a task loudly — so it is the piece that earns a test.
+silently instead of failing a task loudly — so it is the piece that earns a test. The same
+rationale extends to any other parser of another program's output with no other check —
+e.g. `src/power.ts`'s `parseBatteryState` (`pmset -g batt`): a silent mis-parse there reads
+as "battery fine" and drains the machine instead of failing loudly.
 
 Keep that boundary. `resolvePhase` takes its machine observations as an injected
 `Signals` argument specifically so it stays pure and testable without a repo; if you need

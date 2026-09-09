@@ -113,3 +113,18 @@ children; and `parsePlannerOutput` *threw* on zero children, which propagates pa
 `{ kind: "unparseable" }` rather than throwing: `tick.ts` blocks the one task with the
 verbatim proposal in a comment. Rule for any new model-output parser here: never throw
 from one. A malformed reply must cost one task, never the run.
+
+---
+
+## `caffeinate -i` does not survive a closed lid on battery
+
+**Symptom:** An overnight unattended run (`src/power.ts`'s `startCaffeinate`) still stops
+partway through even though the process never crashed and the battery floor was never hit.
+**Cause:** `-i` only asserts against *idle system* sleep. It has no effect on the
+lid-close sleep macOS forces on battery power regardless of any assertion held — that
+requires `-s` (which only works while on AC) or disabling lid-close sleep at the OS level
+(`pmset`). Neither is done automatically, since forcing `-s` off is a machine-wide setting
+change bakloop shouldn't make silently.
+**Fix:** For a run that must survive a closed lid, keep the machine on AC power (README's
+"Unattended runs" note) or open the lid; don't rely on `BAKLOOP_NO_CAFFEINATE`'s absence to
+mean "won't sleep."

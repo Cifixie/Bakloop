@@ -3,12 +3,29 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { runAgent } from "./agent.js";
 import { Backlog } from "./backlog.js";
-import { error as colorError, tag } from "./colors.js";
+import { error as colorError, tag, warn as colorWarn } from "./colors.js";
 import { backlogDir, loadProjects, resolveProjectKey, stateDir } from "./config.js";
 import { createJournal } from "./journal.js";
 import { createLogStore } from "./log.js";
+import { readBatteryState, startCaffeinate } from "./power.js";
 import { renderPrompt } from "./prompts.js";
 import { tick } from "./tick.js";
+
+const DEFAULT_BATTERY_FLOOR = 20;
+
+/** 0 disables the check. Anything unparsable or out of range falls back to the default. */
+function batteryFloorFromEnv(): number {
+  const raw = process.env.BAKLOOP_BATTERY_FLOOR;
+  if (raw === undefined) return DEFAULT_BATTERY_FLOOR;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 100) {
+    console.warn(
+      colorWarn(`${tag("main")} BAKLOOP_BATTERY_FLOOR="${raw}" is not an integer in 0..100, using ${DEFAULT_BATTERY_FLOOR}`),
+    );
+    return DEFAULT_BATTERY_FLOOR;
+  }
+  return parsed;
+}
 
 const run = promisify(execFile);
 
@@ -52,6 +69,11 @@ async function main() {
   process.on("SIGINT", requestStop);
   process.on("SIGTERM", requestStop);
 
+  // Holds a `caffeinate -i` for the run's lifetime so macOS doesn't idle-sleep
+  // mid-run; released in the `finally` below. `BAKLOOP_NO_CAFFEINATE=1` opts out.
+  const stopCaffeinate = startCaffeinate();
+  const batteryFloor = batteryFloorFromEnv();
+
   // Last-resort backstop for a tick throwing something tick.ts's own
   // per-task model-error handling doesn't cover (e.g. a bug, not a known
   // local-model failure) — an unattended overnight run shouldn't die on
@@ -62,6 +84,17 @@ async function main() {
 
   try {
     for (;;) {
+      // Checked at the iteration boundary, same as `stopRequested` — a tick is
+      // one model call and shouldn't be torn in half mid-flight. On AC power
+      // this never fires; on battery it stops cleanly like Ctrl+C.
+      const battery = await readBatteryState();
+      if (batteryFloor > 0 && battery && !battery.onAcPower && battery.percent <= batteryFloor) {
+        console.warn(
+          `${tag("main")} ${colorWarn(`battery at ${battery.percent}% (floor ${batteryFloor}%) — stopping`)}`,
+        );
+        break;
+      }
+
       let result: { done: boolean; note: string };
       try {
         result = await tick({
@@ -92,6 +125,7 @@ async function main() {
   } finally {
     process.off("SIGINT", requestStop);
     process.off("SIGTERM", requestStop);
+    stopCaffeinate();
     journal.close();
     // Leave the working tree on the base branch, not mid-task, between runs.
     await run("git", ["checkout", baseBranch], { cwd: repoCwd }).catch(() => {});

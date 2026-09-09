@@ -192,6 +192,8 @@ at `http://localhost:8000/v1`):
 | `BAKLOOP_HOME` | `~/.bakloop` |
 | `BAKLOOP_PROJECT` | resolved from cwd if unset |
 | `ORC_REPO_CWD` | `process.cwd()` |
+| `BAKLOOP_BATTERY_FLOOR` | `20` (percent; `0` disables the check) |
+| `BAKLOOP_NO_CAFFEINATE` | unset (set to `1` to skip holding a `caffeinate -i`) |
 
 ## Running
 
@@ -203,6 +205,13 @@ pnpm start bogi   # tsx src/main.ts bogi
 
 `BAKLOOP_PROJECT` (if set) takes priority over this argument; with neither set, the
 project is resolved from `ORC_REPO_CWD`/`cwd` instead.
+
+**Unattended runs (macOS):** the loop holds a `caffeinate -i` for its lifetime so idle
+system sleep doesn't kill an overnight run (`BAKLOOP_NO_CAFFEINATE=1` to skip this). This
+only prevents *idle* sleep — closing the lid on battery still sleeps the machine; run on
+AC, or with the lid open, for a run that must survive it. On battery, the loop also stops
+cleanly (same path as Ctrl+C) once the charge drops to `BAKLOOP_BATTERY_FLOOR` percent
+(default `20`; `0` disables the check) — checked once per tick, not mid-tick.
 
 ## Adding tasks
 
