@@ -14,8 +14,13 @@ pipeline of **roles**, each one writing exactly one field on the task:
 Backlog → owner → criteria → architect/researcher (optional) → planner
         → Waiting for Approval → [human moves to Ready for Work] → executor (gated)
         → senior (on repeated failure) → documenter (when docs are affected)
-        → reviewer → Review (human merges) → Done
+        → critic (SHIP/CHANGES/RESPEC) → reviewer → Review (human merges) → Done
 ```
+
+`critic` can push back: `CHANGES` sends the task back to `executor` with specific
+feedback (capped, then blocks for a human); `RESPEC` clears the plan and resets the
+task to `Waiting for Approval` — a fresh human approval is required before execution
+resumes. See D-013 in `wiki/decisions.md`.
 
 | Role | Writes | Tools |
 |---|---|---|
@@ -27,6 +32,7 @@ Backlog → owner → criteria → architect/researcher (optional) → planner
 | `executor` | files | read, write, edit, bash |
 | `senior` | notes (advice), only after repeated failed attempts | read-only |
 | `documenter` | doc files, only when the diff touches a documented surface | read, docs-only write/edit |
+| `critic` | verdict (SHIP/CHANGES/RESPEC) on the actual diff, ahead of `reviewer` | read, bash |
 | `reviewer` | final summary, moves task to Review | read, bash |
 
 Which role runs next is **derived from task state**, never chosen by a model — see
@@ -79,7 +85,10 @@ task to **Ready for Work** first, a visible column move in the Backlog.md board 
 than a label. From there the executor runs the gate loop (typecheck, lint,
 tests, diff checks) until the acceptance criteria are met or it's declared `Blocked`
 after repeated failure. A task only reaches `Review` once a human is expected to open
-and merge its PR — `bakloop` never merges, pushes, or marks anything `Done` itself.
+and merge its PR. `bakloop` never pushes, anywhere, unconditionally (`git-guard.ts`,
+D-003) — but for a project registered `autonomous: true` (D-012), it does merge and
+mark `Done` itself, inside that project's own clone/checkout, once `critic` has
+shipped the diff (D-013). Every other project keeps this paragraph exactly as written.
 
 If a task is too large for one executor pass, the planner can split it into subtasks
 (Backlog.md's `--parent`) instead of writing a plan. Subtasks run the full pipeline

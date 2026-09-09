@@ -93,6 +93,27 @@ export function parseAlignmentOutput(text: string): { drift: boolean; report: st
   return { drift: match[1]!.toUpperCase() === "DRIFT", report: text.trim() };
 }
 
+const CRITIC_LINE = /^\s*(SHIP|CHANGES|RESPEC)\b/i;
+
+/**
+ * Parses the critic's post-execution verdict (D-013). Same contract as
+ * `parseAlignmentOutput`: an explicit token on the first non-blank line, not
+ * a prose scan.
+ *
+ * Unparseable output defaults to `"changes"`, not `"ship"` — an ambiguous
+ * verdict must never silently pass review. `"changes"` over `"respec"` as
+ * the default specifically because an unparseable reply is far more likely
+ * a formatting slip than a genuine "the whole plan is wrong" finding;
+ * `"respec"` is reserved for when the model clearly says so.
+ */
+export function parseCriticOutput(text: string): { verdict: "ship" | "changes" | "respec"; report: string } {
+  const lines = text.split("\n");
+  const firstIdx = lines.findIndex((l) => l.trim() !== "");
+  const match = firstIdx === -1 ? null : lines[firstIdx]!.match(CRITIC_LINE);
+  if (!match) return { verdict: "changes", report: text.trim() };
+  return { verdict: match[1]!.toLowerCase() as "ship" | "changes" | "respec", report: text.trim() };
+}
+
 export interface PlannerSplit {
   title: string;
   description: string;

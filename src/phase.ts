@@ -81,6 +81,31 @@ export const NEEDS_REPLAN_LABEL = "needs-replan";
 export const NEEDS_MANUAL_MERGE_LABEL = "needs-manual-merge";
 
 /**
+ * Marker for the critic's verdict (D-013): written to `implementationNotes`
+ * only on `SHIP` — same one-shot idiom as `hasArchitectContract`. `CHANGES`
+ * and `RESPEC` deliberately do NOT set this marker, so critic runs again
+ * once the requested revision (or re-plan) lands.
+ */
+export const hasCriticVerdict = (task: Task): boolean =>
+  (task.implementationNotes ?? "").includes("**critic:**");
+
+/**
+ * Set by the critic (D-013) on a `CHANGES` verdict: routes the task straight
+ * back to `executor`, bypassing the acceptance-criteria/plan checks that
+ * would otherwise treat it as already finished. Cleared by the executor
+ * itself once its next gates-green pass lands.
+ */
+export const NEEDS_CHANGES_LABEL = "needs-changes";
+
+/**
+ * Set when a leaf task's critic-requested revisions have run out
+ * (`MAX_CRITIC_ROUNDS` in `tick.ts`) without ever reaching `SHIP`. Purely
+ * informational, like `NEEDS_MANUAL_MERGE_LABEL` — `status` is already
+ * `Blocked`, which is what actually halts routing.
+ */
+export const NEEDS_HUMAN_REVIEW_LABEL = "needs-human-review";
+
+/**
  * Routing is DERIVED from which fields are empty, plus machine `Signals`.
  * It is never chosen by a model: it is the one decision with no verification
  * signal, so a bad choice corrupts the loop silently instead of failing a
@@ -116,6 +141,13 @@ export function resolvePhase(task: Task, attempts: number, signals: Signals): Ph
     // surfaces before a human sees a clean-looking summary.
     if (blank(task.finalSummary) && !hasAlignmentCheck(task)) {
       return { role: "architect", reason: "all subtasks complete, verifying sibling alignment before review" };
+    }
+    // A container has no single executor to hand `CHANGES` feedback to, so
+    // critic gets a binary gate here: `SHIP` proceeds, anything else blocks
+    // the same way `DRIFT` already does (`tick.ts`'s `case "critic":`) — see
+    // D-013.
+    if (blank(task.finalSummary) && !hasCriticVerdict(task)) {
+      return { role: "critic", reason: "all subtasks complete, aligned, awaiting critic verdict" };
     }
     if (blank(task.finalSummary)) {
       return { role: "reviewer", reason: "all subtasks complete, awaiting review" };
@@ -169,17 +201,29 @@ export function resolvePhase(task: Task, attempts: number, signals: Signals): Ph
     return null;
   }
 
-  // Senior is gated behind repeated machine failure, not opinion.
-  if (attempts >= 2) {
-    return { role: "senior", reason: `${attempts} failed attempts` };
-  }
-
   const acDone =
     task.acceptanceCriteriaCount > 0 &&
     task.acceptanceCriteriaCompleted === task.acceptanceCriteriaCount;
 
   if (!acDone) {
+    // Senior is gated behind repeated machine failure, not opinion — and
+    // "machine failure" means pre-first-success specifically. Checked here,
+    // not unconditionally, because nothing ever resets `attempts`: once a
+    // task has passed gates at least once, `attempts` staying at or above 2
+    // must never re-trip this and strand a critic/executor revision cycle
+    // (D-013) on the read-only `senior` role instead of routing back to
+    // `critic`/`executor`.
+    if (attempts >= 2) {
+      return { role: "senior", reason: `${attempts} failed attempts` };
+    }
     return { role: "executor", reason: "acceptance criteria incomplete" };
+  }
+
+  // From here on, acDone is true — post-success territory. A critic
+  // `CHANGES` verdict (D-013) routes straight back to executor, ahead of
+  // the documenter/critic/reviewer sequence below.
+  if (task.labels.includes(NEEDS_CHANGES_LABEL)) {
+    return { role: "executor", reason: "critic requested changes" };
   }
 
   // Green gates alone don't earn a documenter tick — a change that moved no
@@ -189,8 +233,16 @@ export function resolvePhase(task: Task, attempts: number, signals: Signals): Ph
     return { role: "documenter", reason: "criteria met, documented surface changed" };
   }
 
+  // A task never reaches reviewer on the executor's word alone (D-013): an
+  // independent critic pass judges the actual diff first. `CHANGES`/`RESPEC`
+  // are handled by `tick.ts`'s `case "critic":` and never set this marker,
+  // so critic runs again once a revision (or re-plan) lands.
+  if (!hasCriticVerdict(task)) {
+    return { role: "critic", reason: "criteria met, awaiting critic verdict" };
+  }
+
   if (blank(task.finalSummary)) {
-    return { role: "reviewer", reason: "criteria met, awaiting review" };
+    return { role: "reviewer", reason: "criteria met, critic shipped, awaiting review" };
   }
 
   return null;

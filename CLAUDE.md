@@ -19,7 +19,11 @@ These are peer constraints — no single one sits above the others.
 - **Gate verdicts are the only source of pass/fail — never the model's own summary.**
   `tsc`, `biome`, `vitest`, and a diff-vs-base check decide success (`src/gates.ts`); the
   model's final message text is never parsed for a verdict, for either the executor or the
-  reviewer role.
+  reviewer role. The narrow, deliberate exception is a distinct role judging a *different*
+  role's finished artifact rather than trusting its own account — the architect's
+  alignment pass (D-007) and `critic` (D-013) — and even then the parsed verdict only
+  ever adds a gate on top of gates already green, never bypasses them. See D-001's
+  amendment for the exact boundary.
 - **`git push` is hard-blocked**, not just discouraged in a prompt (`src/git-guard.ts`).
   Branches are reviewed and pushed by a human. See D-003 for how, and its acknowledged
   limits.

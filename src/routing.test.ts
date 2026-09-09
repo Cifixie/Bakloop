@@ -2,8 +2,21 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { classifyDocsRelevance } from "./gates.js";
 import { extractPaths, findCollisions } from "./overlap.js";
-import { NEEDS_REPLAN_LABEL, NEEDS_SPLIT_LABEL, resolvePhase, type Signals } from "./phase.js";
-import { parseAlignmentOutput, parseCriteriaOutput, parseOwnerOutput, parsePlannerOutput } from "./spec.js";
+import {
+  NEEDS_CHANGES_LABEL,
+  NEEDS_HUMAN_REVIEW_LABEL,
+  NEEDS_REPLAN_LABEL,
+  NEEDS_SPLIT_LABEL,
+  resolvePhase,
+  type Signals,
+} from "./phase.js";
+import {
+  parseAlignmentOutput,
+  parseCriteriaOutput,
+  parseCriticOutput,
+  parseOwnerOutput,
+  parsePlannerOutput,
+} from "./spec.js";
 import { isContextOverflow, rootAncestorId, siblingScopeFor } from "./tick.js";
 import { STATUS, type Comment, type Task, type TaskSummary } from "./types.js";
 
@@ -115,18 +128,19 @@ test("executor runs while criteria are incomplete; senior takes over on repeated
 
 test("documenter runs only when the diff touched a documented surface", () => {
   assert.equal(resolvePhase(gatesGreen(), 0, DOCS)?.role, "documenter");
-  // Same task, nothing documented changed: skip straight to the reviewer.
-  assert.equal(resolvePhase(gatesGreen(), 0, NO_DOCS)?.role, "reviewer");
+  // Same task, nothing documented changed: skip straight to critic (D-013) — not reviewer directly.
+  assert.equal(resolvePhase(gatesGreen(), 0, NO_DOCS)?.role, "critic");
   // One-shot: its own progress-log entry is the marker.
   const documented = gatesGreen({ comments: [comment("documenter")] });
-  assert.equal(resolvePhase(documented, 0, DOCS)?.role, "reviewer");
+  assert.equal(resolvePhase(documented, 0, DOCS)?.role, "critic");
   // Another role's comment must not be mistaken for the documenter's.
   const noisy = gatesGreen({ comments: [comment("executor"), comment("senior")] });
   assert.equal(resolvePhase(noisy, 0, DOCS)?.role, "documenter");
 });
 
 test("a reviewed task is finished; terminal and blocked states are never re-entered", () => {
-  assert.equal(resolvePhase(gatesGreen({ finalSummary: "done" }), 0, NO_DOCS), null);
+  const shipped = gatesGreen({ finalSummary: "done", implementationNotes: "**critic:** looks good" });
+  assert.equal(resolvePhase(shipped, 0, NO_DOCS), null);
   for (const status of [STATUS.done, STATUS.blocked, STATUS.review]) {
     assert.equal(resolvePhase(task({ status }), 0, DOCS), null);
   }
@@ -143,12 +157,20 @@ test("a container task skips implementation and goes to documenter/architect/rev
   // No alignment check yet: architect runs before reviewer, even with no docs signal.
   assert.equal(resolvePhase(container, 0, NO_DOCS)?.role, "architect");
   // One-shot, same pattern as hasDocumented: its own notes entry is the marker.
+  // Aligned, but critic hasn't weighed in yet (D-013) — critic runs before reviewer.
   const checked = task({
     subtasks: [{ id: "TASK-1.1", title: "child" }],
     description: null,
     implementationNotes: "**architect (alignment check):** looks fine",
   });
-  assert.equal(resolvePhase(checked, 0, NO_DOCS)?.role, "reviewer");
+  assert.equal(resolvePhase(checked, 0, NO_DOCS)?.role, "critic");
+  // Aligned AND critic shipped: now it reaches reviewer.
+  const shipped = task({
+    subtasks: [{ id: "TASK-1.1", title: "child" }],
+    description: null,
+    implementationNotes: "**architect (alignment check):** looks fine\n\n**critic:** ship it",
+  });
+  assert.equal(resolvePhase(shipped, 0, NO_DOCS)?.role, "reviewer");
   // A pre-split contract's marker must not be mistaken for the alignment check's.
   const onlyContract = task({
     subtasks: [{ id: "TASK-1.1", title: "child" }],
@@ -166,6 +188,66 @@ test("parseAlignmentOutput requires an explicit first-line verdict, defaulting t
   // No parseable verdict on the first non-blank line: fail safe, not fail open.
   assert.equal(parseAlignmentOutput("I think everything looks aligned here.").drift, true);
   assert.equal(parseAlignmentOutput("").drift, true);
+});
+
+test("parseCriticOutput requires an explicit first-line verdict, defaulting to changes", () => {
+  assert.equal(parseCriticOutput("SHIP\nLooks right.").verdict, "ship");
+  assert.equal(parseCriticOutput("CHANGES\nThe error path never releases the lock.").verdict, "changes");
+  assert.equal(parseCriticOutput("RESPEC\nThe plan never accounted for concurrent writers.").verdict, "respec");
+  // Case-insensitive, and leading blank lines don't defeat the check.
+  assert.equal(parseCriticOutput("\n\nship\nfine").verdict, "ship");
+  // No parseable verdict: fail toward "needs another look", not "ship it" or
+  // "blow up the plan" — a formatting slip is far more likely than either extreme.
+  assert.equal(parseCriticOutput("I think this looks fine overall.").verdict, "changes");
+  assert.equal(parseCriticOutput("").verdict, "changes");
+});
+
+test("senior escalation is machine-failure-gated: it stops applying once acDone is true", () => {
+  // Pre-success: attempts >= 2 still escalates, exactly as before.
+  assert.equal(resolvePhase(executing(), 2, NO_DOCS)?.role, "senior");
+  // Post-success: the same attempts count must route to critic, never senior —
+  // otherwise a couple of legitimate critic/executor revision rounds (D-013)
+  // would strand a fine task on the read-only senior role forever.
+  assert.equal(resolvePhase(gatesGreen(), 2, NO_DOCS)?.role, "critic");
+  assert.equal(resolvePhase(gatesGreen(), 5, NO_DOCS)?.role, "critic");
+});
+
+test("critic (D-013): SHIP reaches reviewer, CHANGES routes back to executor via a label", () => {
+  // No verdict yet: critic runs before reviewer.
+  assert.equal(resolvePhase(gatesGreen(), 0, NO_DOCS)?.role, "critic");
+  // SHIP recorded: now reviewer.
+  const shipped = gatesGreen({ implementationNotes: "**critic:** ship it" });
+  assert.equal(resolvePhase(shipped, 0, NO_DOCS)?.role, "reviewer");
+  // CHANGES: the label routes straight back to executor, bypassing the
+  // acceptance-criteria-complete path entirely, even though AC are checked.
+  const changesRequested = gatesGreen({ labels: [NEEDS_CHANGES_LABEL] });
+  assert.equal(resolvePhase(changesRequested, 0, NO_DOCS)?.role, "executor");
+  // ...and even with a high attempts count, since this is post-success territory.
+  assert.equal(resolvePhase(changesRequested, 5, NO_DOCS)?.role, "executor");
+});
+
+test("critic (D-013): a container gets a binary SHIP-or-blocked gate, same shape as DRIFT", () => {
+  const aligned = task({
+    subtasks: [{ id: "TASK-1.1", title: "child" }],
+    description: null,
+    implementationNotes: "**architect (alignment check):** looks fine",
+  });
+  assert.equal(resolvePhase(aligned, 0, NO_DOCS)?.role, "critic");
+  // A container blocked by a critic verdict (tick.ts sets NEEDS_REPLAN_LABEL
+  // and STATUS.blocked) is never re-entered, same as an alignment DRIFT.
+  const blocked = task({
+    subtasks: [{ id: "TASK-1.1", title: "child" }],
+    description: null,
+    status: STATUS.blocked,
+    labels: [NEEDS_REPLAN_LABEL],
+    implementationNotes: "**architect (alignment check):** looks fine",
+  });
+  assert.equal(resolvePhase(blocked, 0, NO_DOCS), null);
+});
+
+test("NEEDS_HUMAN_REVIEW_LABEL is purely informational — status is what actually halts routing", () => {
+  const exhausted = task({ status: STATUS.blocked, labels: [NEEDS_HUMAN_REVIEW_LABEL] });
+  assert.equal(resolvePhase(exhausted, 0, NO_DOCS), null);
 });
 
 test("context overflow is distinguished from an ordinary transport failure", () => {

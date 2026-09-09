@@ -40,6 +40,17 @@ cost of requiring every target repo to have a runnable `tsc`/`biome`/`vitest` se
 subset — gates are detected per-repo, `src/gates.ts`'s `detectGateConfig`) before bakloop
 can drive it usefully. A repo with none of the three effectively has no gate at all.
 
+**Amended 2026-09-09 (D-013):** this decision is about trusting an *acting* role's
+account of *its own* work — it was never a blanket ban on any parsed model verdict
+anywhere in the loop. Two roles now legitimately drive control flow off a parsed
+verdict: the architect's post-split alignment pass (D-007, `ALIGNED`/`DRIFT`) and
+`critic` (D-013, `SHIP`/`CHANGES`/`RESPEC`). Both are distinct, adversarial roles
+judging a *different* role's finished artifact, never their own, and both verdicts only
+ever add a gate on top of gates already green — neither can make a gate-failing task
+pass. That is the exact boundary that keeps this decision intact: self-report is never
+trusted; a separate role's independent judgment of someone else's finished diff is a
+different thing entirely, and always has been.
+
 ---
 
 ## D-002 — Execution requires a human moving the task to `Ready for Work`
@@ -432,3 +443,79 @@ this decision. A long-running autonomous loop can still drift from the real upst
 over its lifetime, since sync only happens once at start-of-run; accepted as a known
 limit rather than risking a mid-loop pull moving `baseBranch` out from under a task
 that's mid-attempt on it.
+
+---
+
+## D-013 — A real review gate: `critic`, with push-back and re-spec, ahead of `reviewer`
+
+**Date:** 2026-09-09
+**Status:** Accepted
+
+**Context:** `prompts/reviewer.md` says outright *"your job is not to re-verify
+correctness but to write the final summary"* — it's read-only and `tick.ts` never
+parses its text for a verdict. Before this decision, `reviewer` contributed nothing but
+documentation; the only real quality bar was "acceptance criteria met + gates green," a
+compile/lint/test-count bar, never a correctness or design one. For a supervised
+project, a human reading the PR was the actual review; for a D-012 autonomous project,
+that human doesn't exist and nothing replaced it.
+
+**Decision:** A new role, `critic` (`ROLE_TOOLS`: read-only + `bash`, so it runs its own
+`git diff`/`git log` rather than trusting a description of one), sits between
+"acceptance criteria met" and `reviewer` for every project, autonomous or not
+(`src/phase.ts`, `src/tick.ts`'s `case "critic":`). It answers on its first line with
+`SHIP`, `CHANGES`, or `RESPEC` (`parseCriticOutput`, `src/spec.ts`, same explicit-
+first-line-or-fail-safe contract as `parseAlignmentOutput`, defaulting unparseable
+output to `CHANGES` — the milder of the two blocking options, since an ambiguous reply
+is far more likely a formatting slip than a genuine "the whole plan is wrong" finding):
+
+- `SHIP` writes a one-shot `**critic:**` marker to `implementationNotes`
+  (`hasCriticVerdict`) and the task proceeds to `reviewer`.
+- `CHANGES` posts critic's feedback as a comment (the executor's own `CONTEXT` policy
+  already includes the last 3 comments, so this is what actually reaches it) and sets
+  `NEEDS_CHANGES_LABEL`, which routes straight back to `executor` — bypassing the
+  acceptance-criteria-complete check even though AC stay checked throughout. Bounded by
+  its own counter, `AttemptLog.criticRounds`, capped at `MAX_CRITIC_ROUNDS` (3); beyond
+  that the task blocks (`NEEDS_HUMAN_REVIEW_LABEL`, purely informational like
+  `NEEDS_MANUAL_MERGE_LABEL`).
+- `RESPEC` clears `implementationPlan` and resets `status` to `Waiting for Approval` —
+  blank-plan routing alone would let `planner` run immediately regardless of status;
+  this explicit reset is what actually re-imposes D-002's human-approval gate before
+  execution can resume. Verified end-to-end: a `RESPEC`'d task sits at `Waiting for
+  Approval` and does not resume without a human moving it back.
+- A **container** (subtasks present) has no single executor to hand `CHANGES` feedback
+  to, so it gets a binary gate: `SHIP` proceeds, anything else reuses `NEEDS_REPLAN_LABEL`
+  + `STATUS.blocked` — the exact pattern `DRIFT` already uses.
+
+**Not a D-001 violation:** see D-001's 2026-09-09 amendment — this is a distinct,
+adversarial role judging a different role's finished diff, never trusting an actor's
+account of its own work, and it only ever adds a gate on top of gates already green.
+
+**A necessary, deliberate reorder to make this correct:** `if (attempts >= 2) return
+senior` was checked unconditionally in `resolvePhase`, *before* `acDone` was even
+computed — despite its own comment saying it's gated behind "repeated machine failure,"
+which only makes sense pre-first-success. Nothing ever resets `attempts`, so once a task
+crossed that threshold (from raw retries before ever going green), it would silently
+route to the read-only `senior` role forever afterward — including on every tick of a
+perfectly good critic/executor revision cycle, since `attempts` keeps incrementing on
+every executor invocation regardless of trigger. Fixed by moving the `attempts >= 2`
+check inside the `!acDone` branch. Verified: `attempts` reaching 4 across four
+successful critic-driven revision rounds never misrouted to `senior` (see the
+exhaustion-ceiling scratch run in this change).
+
+**Consequences:** `log.attempts`/`log.signatures`/`MAX_ATTEMPTS`/`isStuck` are
+completely untouched by this feature and keep meaning exactly what they meant before —
+a critic-requested fix that itself fails to compile is still a normal "the executor is
+struggling" situation and correctly falls through to that existing machinery (observed
+directly: a stub that made no real progress across three `NEEDS_CHANGES_LABEL` rounds
+hit the pre-existing `blocked-attempts` ceiling at attempt 4, exactly as it would for
+any other stuck executor). `criticRounds` is a deliberately separate counter for
+exactly this reason — reusing `attempts` for it would have reintroduced the same
+stranding bug this decision's reorder just fixed, one layer down.
+
+**Known rough edge, not fixed here (see `wiki/gotchas.md`):** because `NEEDS_CHANGES_LABEL`
+only overrides the reordered senior-check while it's actively set, a task that
+interleaves several *raw* gate failures with critic rounds (rather than clean
+critic-round successes) could still, in principle, hit an in-between tick where
+`acDone` reads false and `attempts` is already high enough to escalate to `senior` mid-
+cycle. Safe (soft-halts for a human, matching `senior`'s existing semantics) and rare,
+not silently wrong — not worth a second parallel counter for a case this narrow.

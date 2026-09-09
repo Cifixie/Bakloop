@@ -25,6 +25,7 @@ const ROLE_COLORS: Record<Role, string> = {
   executor: "\x1b[32m", // green
   senior: "\x1b[95m", // bright magenta
   documenter: "\x1b[93m", // bright yellow
+  critic: "\x1b[31m", // red
   reviewer: "\x1b[92m", // bright green
 };
 

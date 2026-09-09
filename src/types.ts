@@ -130,6 +130,7 @@ export type Role =
   | "executor"    // -> files
   | "senior"      // -> notes (advice), read-only
   | "documenter"  // -> doc files, only when the diff touches a documented surface
+  | "critic"      // -> verdict (SHIP/CHANGES/RESPEC), read-only, gates reviewer (D-013)
   | "reviewer";   // -> finalSummary + new tickets
 
 export type ToolName = "read" | "write" | "edit" | "bash" | "fetch" | "docsWrite" | "docsEdit";
@@ -146,5 +147,6 @@ export const ROLE_TOOLS: Record<Role, readonly ToolName[]> = {
   executor: ["read", "write", "edit", "bash"],
   senior: ["read"],
   documenter: ["read", "docsWrite", "docsEdit"],
+  critic: ["read", "bash"],
   reviewer: ["read", "bash"],
 };

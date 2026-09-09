@@ -22,7 +22,7 @@ that opts into it. For a project that doesn't, D-011 is still exactly the open q
 it was: run `findCollisions` on every promotion, or widen scope-sharing to the whole
 project, not just one split's tree. Not decided.
 
-**D-012, shipped this session: autonomous integration for opted-in projects.**
+**D-012, autonomous integration for opted-in projects.**
 `ProjectEntry.autonomous` (`src/config.ts`) — when set, `case "reviewer":` in
 `src/tick.ts` rebases the task's branch onto `baseBranch`, re-runs gates against the
 rebased tip, squash-merges on green, and marks the task `Done` itself; a conflict or a
@@ -32,21 +32,34 @@ cloned via `gh repo clone`) implies `autonomous: true` automatically, into
 `$BAKLOOP_HOME/clones/<key>` on its own `bakloop/trunk`; registering from an existing
 local path keeps today's supervised behavior unless `--autonomous` is passed explicitly
 (a known, loudly-flagged risk against a real checkout). `git push` remains hard-blocked
-everywhere, unconditionally — nothing in this path calls it. Typechecked, unit-tested
-(existing suite, unchanged and green), and manually verified end-to-end at the git level:
-local-path registration, `--autonomous` local-path registration, URL registration via a
-real `gh repo clone`, a clean rebase + squash-merge, and a rebase conflict correctly
-aborting with the task branch left at its original tip. **Not yet run through a real
-`npm start` loop against a live local model** — the git-command sequences were verified
-directly, not via a full tick. See D-012 in `wiki/decisions.md` for the design rationale.
+everywhere, unconditionally — nothing in this path calls it.
 
-**Next action:** run an autonomous project through a real `npm start` loop end to end
-(register a throwaway repo by URL, let a task go executor → reviewer → integration,
-confirm `Done` lands and the trunk branch advances) to close the "not yet run through a
-real loop" gap above. Separately, `book` itself is registered as a supervised (non-
-autonomous) project — TASK-1 is unblocked and safe to move to `Ready for Work` now that
-TASK-3 depends on it; TASK-2 is currently `Blocked`/`needs-replan` from D-009's automatic
-post-split check on the TASK-2.4/TASK-2.5 `lambdas/extraction/handler.ts` finding, which
-looks like a false positive (2.4 creates the handler; 2.5 only points a CDK `entry` at
-its path) — decide whether to clear that label by hand or teach `findCollisions` to tell
-"creates" from "references the path of" apart before unblocking it.
+**D-013, shipped this session: a real review gate, `critic`, ahead of `reviewer`.**
+Closes the gap D-012 exposed: `reviewer` was always documentation-only
+(`prompts/reviewer.md` says so outright), never a real quality bar — the only actual gate
+was "AC met + gates green," a compile/lint/test bar, not a correctness one. `critic`
+(`src/phase.ts`/`src/tick.ts`) now sits between the two for every project, autonomous or
+not, and answers `SHIP` (proceeds to reviewer), `CHANGES` (specific feedback, back to
+executor, capped at `MAX_CRITIC_ROUNDS`=3 before blocking for a human), or `RESPEC`
+(clears the plan, resets to `Waiting for Approval` — re-imposes D-002's human-approval
+gate before execution resumes). Required a small, deliberate reorder in `resolvePhase`
+(moving `attempts >= 2`'s senior-escalation check inside the `!acDone` branch) to stop a
+legitimate critic/executor revision cycle from getting silently stranded on the
+read-only `senior` role — see D-013 and its gotchas.md entry for the residual, narrow
+edge case left open. Typechecked, unit-tested (5 new tests in `routing.test.ts`), and
+manually verified end-to-end against a scratch repo with a stubbed model: the full
+`SHIP`/`CHANGES` cycle, `RESPEC` correctly requiring fresh human approval, and the
+`MAX_CRITIC_ROUNDS` ceiling blocking on the 4th `CHANGES` verdict without ever
+misrouting to `senior` despite `attempts` climbing to 4 in the process.
+
+**Next action:** both D-012 and D-013 are now built and verified at the git/tick level
+against scratch repos, but neither has been run through a real `npm start` loop against
+a live local model end to end together — worth doing once, registering a throwaway repo
+by URL, to see a real model's `critic` output land correctly. Separately, `book` itself
+is registered as a supervised (non-autonomous) project — TASK-1 is unblocked and safe to
+move to `Ready for Work` now that TASK-3 depends on it; TASK-2 is currently
+`Blocked`/`needs-replan` from D-009's automatic post-split check on the
+TASK-2.4/TASK-2.5 `lambdas/extraction/handler.ts` finding, which looks like a false
+positive (2.4 creates the handler; 2.5 only points a CDK `entry` at its path) — decide
+whether to clear that label by hand or teach `findCollisions` to tell "creates" from
+"references the path of" apart before unblocking it.

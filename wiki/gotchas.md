@@ -128,3 +128,24 @@ change bakloop shouldn't make silently.
 **Fix:** For a run that must survive a closed lid, keep the machine on AC power (README's
 "Unattended runs" note) or open the lid; don't rely on `BAKLOOP_NO_CAFFEINATE`'s absence to
 mean "won't sleep."
+
+---
+
+## `attempts` is one counter shared by every executor invocation, regardless of trigger
+
+**Symptom:** A task that's already passed gates once (critic's `CHANGES`, D-013, sent it
+back to `executor` for a revision) could, in principle, get routed to the read-only
+`senior` role instead of back to `critic`/`executor` — stranding a perfectly fine,
+almost-shipped task.
+**Cause:** `log.attempts` increments on every executor tick, success or failure, and is
+never reset. `resolvePhase`'s senior-escalation check (`attempts >= 2`) is now scoped to
+only fire pre-first-success (`!acDone`) specifically to prevent this — but the scoping
+only protects the *window* while `NEEDS_CHANGES_LABEL` is actively set. A task that
+interleaves genuine gate failures with critic-requested revisions (not just clean
+revision successes) could still land on a tick where `acDone` briefly reads false again
+with `attempts` already high, and get escalated to `senior` mid-cycle.
+**Fix:** Nothing to fix reactively today — this is safe (soft-halts for a human, exactly
+`senior`'s intended semantics) and narrow (requires failures interleaved with revisions,
+not just revisions). If it turns out to matter in practice, the fix is a counter fully
+independent of `attempts` for the whole post-first-success phase, not a bigger
+`MAX_ATTEMPTS`. See D-013.

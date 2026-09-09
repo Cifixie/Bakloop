@@ -135,6 +135,17 @@ const CONTEXT: Record<Role, ContextPolicy> = {
     comments: 10,
   },
   documenter: { description: true, acceptanceCriteria: true, plan: true, notes: true },
+  // Same policy as `reviewer`, deliberately: it judges the actual diff (via its own
+  // `git diff`, not a description of one), never the executor's account of it — so,
+  // like `reviewer`, it gets no `comments`. See D-013.
+  critic: {
+    description: true,
+    acceptanceCriteria: true,
+    definitionOfDone: true,
+    plan: true,
+    notes: true,
+    dependencies: true,
+  },
   reviewer: {
     description: true,
     acceptanceCriteria: true,

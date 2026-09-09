@@ -12,6 +12,8 @@ import {
 import type { Journal, TickOutcome, TickRecord } from "./journal.js";
 import {
   hasArchitectContract,
+  NEEDS_CHANGES_LABEL,
+  NEEDS_HUMAN_REVIEW_LABEL,
   NEEDS_MANUAL_MERGE_LABEL,
   NEEDS_REPLAN_LABEL,
   NEEDS_SPLIT_LABEL,
@@ -20,8 +22,17 @@ import {
 } from "./phase.js";
 import { findCollisions, render as renderCollisions } from "./overlap.js";
 import type { SiblingScope } from "./prompts.js";
-import { parseAlignmentOutput, parseCriteriaOutput, parseOwnerOutput, parsePlannerOutput } from "./spec.js";
+import {
+  parseAlignmentOutput,
+  parseCriteriaOutput,
+  parseCriticOutput,
+  parseOwnerOutput,
+  parsePlannerOutput,
+} from "./spec.js";
 import { ROLE_TOOLS, STATUS, type Role, type Task, type TaskSummary } from "./types.js";
+
+/** D-013: how many times critic is allowed to say `CHANGES` on one leaf task before it blocks for a human. */
+const MAX_CRITIC_ROUNDS = 3;
 
 /** Attempt bookkeeping. Persisted to disk, not held in memory. */
 export interface AttemptLog {
@@ -30,6 +41,14 @@ export interface AttemptLog {
   signatures: string[];
   /** Consecutive model-call failures (transport/OOM/context-overflow), reset on any success. */
   modelErrors?: number;
+  /**
+   * D-013: how many times critic has said `CHANGES` for this task.
+   * Deliberately separate from `attempts` — that counter drives senior
+   * escalation for raw pre-first-success gate failures; reusing it here
+   * would strand a legitimate critic/executor revision cycle on the
+   * read-only `senior` role once it crossed that threshold.
+   */
+  criticRounds?: number;
 }
 
 /** What one model call cost, for the tick journal. Never used for control flow. */
@@ -608,6 +627,66 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
         note: `${task.id}: ${committed ? "documentation updated" : "documentation already current"}`,
       };
     }
+    case "critic": {
+      // D-013: an independent verdict on the actual diff, never the
+      // executor's own account of it (D-001) — this only ever adds a gate
+      // on top of gates already green, never bypasses them.
+      const { verdict, report } = parseCriticOutput(result.text);
+      const isContainer = task.subtasks.length > 0;
+
+      if (verdict === "ship") {
+        // One-shot marker (hasCriticVerdict) — never written on CHANGES/
+        // RESPEC, so critic runs again once a revision or re-plan lands.
+        await backlog.appendNotes(task.id, `**critic:** ${report}`);
+        return { done: false, outcome: "critic-shipped", note: `${task.id}: critic shipped` };
+      }
+
+      if (isContainer) {
+        // No single executor to hand feedback to at this level — same
+        // "a human resolves it before reviewer" pattern DRIFT already uses.
+        await backlog.comment(task.id, "critic", report);
+        await backlog.addLabel(task.id, NEEDS_REPLAN_LABEL);
+        await backlog.setStatus(task.id, STATUS.blocked);
+        return {
+          done: false,
+          outcome: "critic-blocked",
+          note: `${task.id}: critic blocked the container (${verdict})`,
+        };
+      }
+
+      if (verdict === "respec") {
+        await backlog.comment(task.id, "critic", report);
+        await backlog.setPlan(task.id, "");
+        // Blank plan alone would let planner run immediately regardless of
+        // status — this explicit reset is what actually re-imposes D-002's
+        // human-approval gate before execution can resume.
+        await backlog.setStatus(task.id, STATUS.waitingForApproval);
+        return { done: false, outcome: "critic-respec", note: `${task.id}: critic requested a re-spec` };
+      }
+
+      // CHANGES
+      log.criticRounds = (log.criticRounds ?? 0) + 1;
+      await saveLog(log);
+      // Posted as a comment, not notes: the executor's own CONTEXT policy
+      // already includes the last few progress-log comments, so this is
+      // what actually gets the feedback in front of it next tick.
+      await backlog.comment(task.id, "critic", report);
+      if (log.criticRounds > MAX_CRITIC_ROUNDS) {
+        await backlog.setStatus(task.id, STATUS.blocked);
+        await backlog.addLabel(task.id, NEEDS_HUMAN_REVIEW_LABEL);
+        return {
+          done: false,
+          outcome: "critic-changes-exhausted",
+          note: `${task.id}: ${log.criticRounds} critic rounds, blocked for human review`,
+        };
+      }
+      await backlog.addLabel(task.id, NEEDS_CHANGES_LABEL);
+      return {
+        done: false,
+        outcome: "critic-changes-requested",
+        note: `${task.id}: critic requested changes (round ${log.criticRounds})`,
+      };
+    }
     case "reviewer": {
       // Not Done: a human still has to open, review, and merge the PR —
       // unless this project opted into D-012's autonomous integration,
@@ -685,6 +764,10 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
     for (const item of task.definitionOfDone) {
       if (!item.checked) await backlog.checkDod(task.id, item.index);
     }
+    // D-013: a critic-requested revision that now passes gates clears the
+    // flag that routed it back here, so the next tick goes to critic for a
+    // fresh verdict rather than looping back to executor again.
+    if (task.labels.includes(NEEDS_CHANGES_LABEL)) await backlog.removeLabel(task.id, NEEDS_CHANGES_LABEL);
     if (task.parentTaskId) {
       // A subtask doesn't get its own PR review — it finalizes here, and the
       // parent's single reviewer pass runs once every subtask is Done.
