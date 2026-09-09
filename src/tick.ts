@@ -1,5 +1,5 @@
 import { Backlog } from "./backlog.js";
-import { commitAll, ensureTaskBranch } from "./branch.js";
+import { branchNameFor, commitAll, ensureTaskBranch, git } from "./branch.js";
 import { error as colorError, roleTag, tag } from "./colors.js";
 import {
   captureBaseline,
@@ -10,7 +10,14 @@ import {
   type Baseline,
 } from "./gates.js";
 import type { Journal, TickOutcome, TickRecord } from "./journal.js";
-import { hasArchitectContract, NEEDS_REPLAN_LABEL, NEEDS_SPLIT_LABEL, resolvePhase, selectTask } from "./phase.js";
+import {
+  hasArchitectContract,
+  NEEDS_MANUAL_MERGE_LABEL,
+  NEEDS_REPLAN_LABEL,
+  NEEDS_SPLIT_LABEL,
+  resolvePhase,
+  selectTask,
+} from "./phase.js";
 import { findCollisions, render as renderCollisions } from "./overlap.js";
 import type { SiblingScope } from "./prompts.js";
 import { parseAlignmentOutput, parseCriteriaOutput, parseOwnerOutput, parsePlannerOutput } from "./spec.js";
@@ -192,6 +199,14 @@ export interface TickOptions {
   renderPrompt: (role: Role, task: Task, scope?: SiblingScope) => string;
   /** Optional: omit to run without recording anything (tests, one-off scripts). */
   journal?: Journal;
+  /**
+   * D-012: on green review, rebase the task branch onto `baseBranch`, re-run
+   * gates against the rebased tip, squash-merge, and mark the task Done —
+   * no human step. Set from `ProjectEntry.autonomous` in `main.ts`; defaults
+   * to false so every other project keeps today's exact "reviewer stops,
+   * a human merges" behavior.
+   */
+  autonomousIntegration?: boolean;
 }
 
 /**
@@ -250,7 +265,18 @@ export async function tick(opts: TickOptions): Promise<{ done: boolean; note: st
 }
 
 async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResult> {
-  const { backlog, repoCwd, project, baseBranch, gateConfigPath, runAgent, loadLog, saveLog, renderPrompt } = opts;
+  const {
+    backlog,
+    repoCwd,
+    project,
+    baseBranch,
+    gateConfigPath,
+    runAgent,
+    loadLog,
+    saveLog,
+    renderPrompt,
+    autonomousIntegration,
+  } = opts;
 
   const all = await backlog.list(undefined, project);
   const containers = containerIds(all);
@@ -582,12 +608,18 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
         note: `${task.id}: ${committed ? "documentation updated" : "documentation already current"}`,
       };
     }
-    case "reviewer":
-      // Not Done: a human still has to open, review, and merge the PR.
-      // Done is a fact only they (or a future GitHub sync) can assert.
+    case "reviewer": {
+      // Not Done: a human still has to open, review, and merge the PR —
+      // unless this project opted into D-012's autonomous integration,
+      // in which case the rebase-then-regate-then-merge below is what
+      // decides Done, never the model's review text.
       await backlog.setFinalSummary(task.id, result.text);
       await backlog.setStatus(task.id, STATUS.review);
-      return { done: false, outcome: "reviewed", note: `${task.id}: reviewed — awaiting human PR review` };
+      if (!autonomousIntegration || task.parentTaskId) {
+        return { done: false, outcome: "reviewed", note: `${task.id}: reviewed — awaiting human PR review` };
+      }
+      return await integrate(opts, task, rootAncestorId(task.id, all));
+    }
     case "owner": {
       const { description, type } = parseOwnerOutput(result.text);
       if (description === "") {
@@ -686,5 +718,82 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
     done: false,
     outcome: "gates-failed",
     note: `${task.id}: retrying: ${gates.failures.join(", ")}`,
+  };
+}
+
+/**
+ * D-012: the model-free half of autonomous integration, run once a
+ * top-level task has passed review with `autonomousIntegration` set.
+ * "Gates were green before rebase" says nothing about after — rebasing
+ * onto a `baseBranch` that moved since the task's branch was cut is
+ * exactly the shape of the cross-task collision that motivated this
+ * (see wiki/decisions.md D-011): a real compile+test run is the check
+ * that matters here, not a static path guess. Never force-resolves a
+ * conflict or a broken rebase — either always rewinds back to the task
+ * branch's original tip and blocks for a human, exactly as an executor
+ * attempt does today (`STATUS.blocked`), just with a distinct label so
+ * it's clear this failed at integration, not implementation.
+ */
+async function integrate(opts: TickOptions, task: Task, rootId: string): Promise<TickResult> {
+  const { backlog, repoCwd, baseBranch, gateConfigPath } = opts;
+  const branch = branchNameFor(rootId);
+
+  await backlog.comment(task.id, "bakloop", `autonomous integration: rebasing ${branch} onto ${baseBranch}`);
+  const { stdout: savedTip } = await git(repoCwd, ["rev-parse", branch]);
+
+  await git(repoCwd, ["checkout", branch]);
+  const rebased = await git(repoCwd, ["rebase", baseBranch]).then(
+    () => true,
+    () => false,
+  );
+  if (!rebased) {
+    await git(repoCwd, ["rebase", "--abort"]).catch(() => {});
+    await backlog.comment(
+      task.id,
+      "bakloop",
+      `autonomous integration: rebase conflict against ${baseBranch}, branch left at ${savedTip.trim()}`,
+    );
+    await backlog.setStatus(task.id, STATUS.blocked);
+    await backlog.addLabel(task.id, NEEDS_MANUAL_MERGE_LABEL);
+    return {
+      done: false,
+      outcome: "integration-conflict",
+      note: `${task.id}: rebase conflict integrating onto ${baseBranch}`,
+    };
+  }
+
+  const gateConfig = await loadGateConfig(repoCwd, gateConfigPath);
+  const base = await captureBaseline(repoCwd, baseBranch, gateConfig);
+  const gates = await runGates(repoCwd, base, gateConfig, baseBranch);
+  if (!gates.ok) {
+    await git(repoCwd, ["reset", "--hard", savedTip.trim()]);
+    await backlog.comment(
+      task.id,
+      "bakloop",
+      `autonomous integration: gates failed after rebase onto ${baseBranch} (${gates.failures.join(", ")}); rebase undone, branch reset to ${savedTip.trim()}`,
+    );
+    await backlog.setStatus(task.id, STATUS.blocked);
+    await backlog.addLabel(task.id, NEEDS_MANUAL_MERGE_LABEL);
+    return {
+      done: false,
+      outcome: "integration-gate-failure",
+      note: `${task.id}: gates failed after rebase onto ${baseBranch} (${gates.failures.join(", ")})`,
+    };
+  }
+
+  await git(repoCwd, ["checkout", baseBranch]);
+  await git(repoCwd, ["merge", "--squash", branch]);
+  await git(repoCwd, ["commit", "-m", `${task.id}: ${task.title}`]);
+  const { stdout: mergedSha } = await git(repoCwd, ["rev-parse", "HEAD"]);
+  await backlog.comment(
+    task.id,
+    "bakloop",
+    `autonomous integration: squash-merged ${branch} onto ${baseBranch} as ${mergedSha.trim()}`,
+  );
+  await backlog.setStatus(task.id, STATUS.done);
+  return {
+    done: false,
+    outcome: "integrated",
+    note: `${task.id}: integrated onto ${baseBranch} as ${mergedSha.trim()}`,
   };
 }

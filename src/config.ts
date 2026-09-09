@@ -33,6 +33,15 @@ export interface ProjectEntry {
   path: string;
   /** The branch each task's own branch forks from, and is diffed against for gates. */
   baseBranch: string;
+  /**
+   * Opt-in (D-012): on green review, the agent itself rebases the task branch onto
+   * `baseBranch`, re-runs gates, squash-merges, and marks the task Done — no human
+   * step. Implied automatically when a project is registered from a git URL (there's
+   * no developer checkout at `path` to protect); requires `--autonomous` when
+   * registered from an existing local path, since that's a known risk against a
+   * real working checkout.
+   */
+  autonomous?: boolean;
 }
 
 export type ProjectMap = Record<string, ProjectEntry>;

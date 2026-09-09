@@ -3,6 +3,12 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+/** Thin shared entry point so branch/merge code (including D-012's autonomous
+ * integration in `tick.ts`) all invoke `git` the same way. */
+export async function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+  return run("git", args, { cwd });
+}
+
 /** Deterministic, not model-chosen — one task always maps to the same branch. */
 export function branchNameFor(taskId: string): string {
   return `bakloop/${taskId.toLowerCase()}`;

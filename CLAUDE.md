@@ -111,7 +111,12 @@ one is already stale — fix it by deleting the copy, not by syncing them.
 **Human-only. Never do these, even if asked to "finish the task":**
 - moving a task to `Ready for Work` on a human's behalf, merging a PR, or marking
   anything `Done` other than a subtask on green gates (`src/tick.ts` does this
-  automatically; a top-level task's `Done` is still human/GitHub-sync only)
+  automatically; a top-level task's `Done` is still human/GitHub-sync only) —
+  **except** for a project registered with `autonomous: true` (D-012), where the agent
+  itself rebases, re-gates, and squash-merges a reviewed task's branch into
+  `baseBranch` and marks it `Done`, by design and with no human step. This carve-out
+  applies only inside that project's own clone/checkout, never to `git push`, which
+  stays hard-blocked everywhere unconditionally (D-003).
 
 ## Testing
 

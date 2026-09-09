@@ -42,7 +42,21 @@ async function main() {
   }
   const entry = projects[project];
   if (!entry) throw new Error(`BAKLOOP_PROJECT="${project}" is not a registered project.`);
-  const { path: repoCwd, baseBranch } = entry;
+  const { path: repoCwd, baseBranch, autonomous } = entry;
+
+  if (autonomous) {
+    // Best-effort, once per run, not per tick: the only chance an autonomous
+    // project's own clone has to see upstream movement before a run of tasks
+    // builds on it. Never blocks the run — a stale trunk is "at least
+    // somewhat latest" and still better than refusing to start.
+    await run("git", ["checkout", baseBranch], { cwd: repoCwd }).catch(() => {});
+    await run("git", ["pull", "--rebase"], { cwd: repoCwd }).catch(async (err) => {
+      await run("git", ["rebase", "--abort"], { cwd: repoCwd }).catch(() => {});
+      console.warn(
+        colorWarn(`${tag("main")} pre-run "git pull --rebase" on "${baseBranch}" failed, continuing on the existing tip: ${err instanceof Error ? err.message : err}`),
+      );
+    });
+  }
 
   const backlog = new Backlog(backlogDir());
   const { loadLog, saveLog } = createLogStore(stateDir(project));
@@ -108,6 +122,7 @@ async function main() {
           saveLog,
           renderPrompt,
           journal,
+          autonomousIntegration: Boolean(autonomous),
         });
         consecutiveCrashes = 0;
       } catch (err) {

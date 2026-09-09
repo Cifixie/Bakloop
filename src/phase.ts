@@ -73,6 +73,14 @@ export const NEEDS_SPLIT_LABEL = "needs-split";
 export const NEEDS_REPLAN_LABEL = "needs-replan";
 
 /**
+ * Set on a task whose D-012 autonomous integration hit a rebase conflict or
+ * a post-rebase gate failure. Purely informational — `status` is already
+ * `Blocked`, which is what actually stops `resolvePhase` from touching it
+ * again, so this label carries no routing logic of its own.
+ */
+export const NEEDS_MANUAL_MERGE_LABEL = "needs-manual-merge";
+
+/**
  * Routing is DERIVED from which fields are empty, plus machine `Signals`.
  * It is never chosen by a model: it is the one decision with no verification
  * signal, so a bad choice corrupts the loop silently instead of failing a

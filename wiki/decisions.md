@@ -85,6 +85,14 @@ explicitly acknowledged cost that it isn't a real sandbox — an absolute path t
 `git` binary or a shell alias would bypass it. It stops an honest mistake, not a
 determined adversarial model.
 
+**Amended 2026-09-09 (D-012):** the push block itself is unchanged and unconditional —
+D-012's autonomous integration never calls `git push` anywhere, so `git-guard.ts` needed
+no change. What D-012 does grant, for an opted-in project only, is local merge/`Done`
+authority that this decision never covered one way or the other: this decision is about
+the network boundary specifically, and merging into a local `baseBranch` (whether that's
+bakloop's own clone or, with `--autonomous`, a human's real checkout) was always a
+distinct operation from pushing to a remote.
+
 ---
 
 ## D-004 — One branch per top-level ticket; subtasks share their root ancestor's branch
@@ -235,10 +243,14 @@ owned list keeps the cost at zero extra CLI calls (the project listing is alread
 and proved sufficient on the observed failure, where the duplicated titles were plainly
 recognisable as the same work.
 
-**Not addressed:** nothing yet *detects* overlap after the fact. D-007's alignment pass
-asks a model; there is no deterministic check that two sibling tasks name the same file.
-Until one exists, "did this work?" is answered by a human reading the tree — which is how
-the `book` duplication was found in the first place.
+**Not addressed:** nothing yet *detects* overlap after the fact — since fixed by D-009. But
+D-009's automatic check only runs right after a split creates children; it does not run
+when a top-level task is independently created or promoted. `SiblingScope` here is scoped
+per root ancestor, so two top-level tasks in the same project (each its own root) are
+invisible to each other in both mechanisms. Observed for real on `book`: TASK-1 and TASK-3,
+two independently-planned top-level tasks, ended up writing conflicting logic into the same
+four files, and neither D-008 nor D-009's automatic trigger caught it — only a manual
+`npm run overlap book` did. See D-011 (proposed) for closing this.
 
 ---
 
@@ -319,3 +331,104 @@ so the loop can stop a few points under the nominal floor; the default (`20`) ha
 for that. Stopping cleanly rather than pausing means a run left overnight on battery ends
 instead of waiting to be plugged back in — deliberate, matching D-006's preference for a
 clean, well-understood stop boundary over added state-machine complexity.
+
+---
+
+## D-011 (proposed) — Overlap across independently-created top-level tasks is undetected
+
+**Date:** 2026-09-09
+**Status:** Proposed
+
+**Context:** D-008's `SiblingScope` and D-009's automatic post-split check both operate on
+one root ancestor's tree. Two top-level tasks in the same project — each its own root,
+never produced by the same split — are invisible to both mechanisms. Observed on `book`:
+TASK-1 and TASK-3, planned independently, ended up writing real conflicting logic into the
+same four files (`ingest-url/handler.ts`, `fetch-source/handler.ts`,
+`bookmark-digest-stack.ts`, `dynamo.ts`), and only a manually-run `npm run overlap book`
+caught it — nothing in the loop itself did. See `wiki/current-work.md` for the full
+`tmp/overlap-2.txt` finding.
+
+**The fork this needs a human on:** `findCollisions` (`src/overlap.ts`) already answers
+this correctly for the whole tree when run by hand — the question is only *when* it runs
+automatically. Two shapes, not mutually exclusive:
+
+1. Run it against the whole project tree whenever a task is promoted to `Waiting for
+   Approval` (or moved to `Ready for Work`), not only right after a split. Cheap, but a
+   collision found this late still means one of two already-planned tasks needs replanning.
+2. Give the planner/architect visibility into *other top-level tasks* in the project, not
+   just its own tree's siblings — i.e. extend `SiblingScope` (or a variant of it) to the
+   whole project rather than one root ancestor. Prevents the collision from being planned
+   in the first place, at the cost of the same context-size pressure D-008's rationale
+   already weighs against widening scope.
+
+Not resolved here because it changes what counts as a task's "scope" for planning
+purposes, which is worth a decision before code, not after.
+
+**Update (D-012):** for a project opted into D-012's autonomous integration, this gap is
+effectively moot — the mandatory rebase-then-regate step before any merge is a real
+compile+test run against the actual current `baseBranch`, strictly stronger than the
+static path-collision guess this decision is about. TASK-1/TASK-3's collision would
+surface as an integration conflict or gate failure on whichever task tried to integrate
+second, not silently. This decision remains fully open for every non-autonomous project,
+which is still the default.
+
+---
+
+## D-012 — Autonomous integration for opted-in projects: the agent rebases, re-gates, and
+squash-merges its own clone's task branches, no human step
+
+**Date:** 2026-09-09
+**Status:** Accepted
+
+**Context:** D-011 (above) identified that sequencing top-level tasks with `dependencies`
+fixes *when* the loop starts a dependent task but not *what it starts from*: without a
+human merging a finished branch back to `baseBranch` first, the next task still forks
+from a stale base and can reproduce the exact collision the dependency was meant to
+prevent. The human asked to remove that human step entirely, while keeping the existing
+hard constraint intact: the agent never pushes anywhere (D-003), and never touches a
+developer's own working checkout without being explicitly told to.
+
+**Decision:** `ProjectEntry.autonomous` (`src/config.ts`) is an opt-in per-project flag.
+When set, `case "reviewer":` in `src/tick.ts` (after the existing final-summary/status
+write) runs a deterministic, model-free integration instead of stopping at `Review`:
+
+1. Rebase the task's branch onto `baseBranch`. A conflict aborts the rebase, blocks the
+   task (`STATUS.blocked`, label `needs-manual-merge`), and never auto-resolves.
+2. On a clean rebase, re-run `captureBaseline`/`runGates` (`src/gates.ts`) against the
+   *rebased* tip — the same functions the executor path already uses. This is the
+   load-bearing check: "gates were green before rebase" says nothing about after, and
+   rebasing onto a branch that moved is exactly D-011's collision shape. A post-rebase
+   gate failure resets the task branch back to its pre-rebase tip (`git reset --hard`)
+   and blocks the same way a conflict does — never leaves a broken rebase in place.
+3. On green gates, squash-merge the branch into `baseBranch` and mark the task `Done`.
+   The task branch is never deleted, success or failure, so a human can inspect exactly
+   what merged and why whenever they come back.
+
+Every step writes a `backlog.comment` — there is no silent state transition in this path.
+
+**How a project opts in (`src/register-project.ts`):** registering from a git URL (or an
+`owner/repo` shorthand, cloned via `gh repo clone` to ride an existing `gh auth` session
+instead of requiring local SSH-key/PAT setup, falling back to plain `git clone` when `gh`
+isn't available or the source isn't GitHub-shaped) clones into
+`$BAKLOOP_HOME/clones/<key>`, checks out a dedicated `bakloop/trunk` branch, and sets
+`autonomous: true` automatically — there is no developer working checkout at that path to
+protect, so full autonomy is the natural default. Registering from an existing local path
+keeps today's exact supervised behavior unless `--autonomous` is passed explicitly, which
+prints a loud warning: that's a known, plainly-flagged risk against a real checkout the
+human may also be working in, not something this decision tries to soften.
+
+At the start of a run (not per-tick), an autonomous project's `main.ts` does one
+best-effort `git pull --rebase` on `baseBranch` before the loop begins, so upstream
+movement has *some* chance to reach the trunk before a run of tasks builds on it. A
+failed pull just aborts and continues on the existing tip — never blocks the run, and
+nothing pulls again mid-run.
+
+**Consequences:** D-003's push block is completely unmodified — nothing in this path ever
+calls `git push`, so `src/git-guard.ts` needed no change; the boundary this decision
+respects is "never push," not "never merge." Merge/`Done` authority for a top-level task
+is genuinely new and, for an opted-in project, supersedes the "human/GitHub-sync only"
+line in CLAUDE.md's human-only list — see that file's amendment in the same change as
+this decision. A long-running autonomous loop can still drift from the real upstream
+over its lifetime, since sync only happens once at start-of-run; accepted as a known
+limit rather than risking a mid-loop pull moving `baseBranch` out from under a task
+that's mid-attempt on it.

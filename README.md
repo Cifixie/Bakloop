@@ -178,6 +178,18 @@ adds the key to the shared store's `projects` list in `backlog/config.yml`):
 npm run register-project -- <key> [path]   # path defaults to cwd; tsx src/register-project.ts
 ```
 
+`path` also accepts a git URL or an `owner/repo` shorthand instead of a local directory
+(cloned via `gh repo clone` when it's GitHub-shaped, falling back to plain `git clone`
+otherwise). That clones bakloop's own copy under `$BAKLOOP_HOME/clones/<key>` and runs
+it fully autonomously (D-012): on a passed review the agent itself rebases, re-gates,
+and squash-merges a task's branch into its own trunk and marks it `Done` — no human PR
+step, since there's no developer checkout at that path to protect. Passing `--autonomous`
+with a local `path` opts that same real checkout into the identical behavior — a known,
+explicitly-flagged risk against a directory you may also be working in yourself, not
+something bakloop tries to soften. Either way, task branches are never deleted and
+`git push` stays hard-blocked everywhere unconditionally (D-003) — nothing in this repo
+ever pushes anywhere.
+
 Point it at a local, OpenAI-compatible model server (e.g. [oMLX](https://github.com/ml-explore/mlx)
 at `http://localhost:8000/v1`):
 

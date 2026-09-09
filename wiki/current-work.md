@@ -5,108 +5,48 @@ History lives in git.
 
 ---
 
-**Unrelated, small, done:** the loop now holds a `caffeinate -i` for its lifetime and
-stops cleanly at a battery floor (default 20%, `BAKLOOP_BATTERY_FLOOR`). See D-010,
-`src/power.ts`. Typechecked, unit-tested (`src/power.test.ts`), and manually verified
-(caffeinate process spawns/dies correctly; `parseBatteryState` checked against real
-`pmset -g batt` output). Not yet observed stopping a real `npm start` loop at the floor —
-that would require actually draining a laptop or running with real battery near the
-threshold, which wasn't done.
+**D-007/D-008 (sibling overlap prevention) are built, tested, and now observed running**
+on the `book` project: a fresh planner run produced three top-level tasks — TASK-1 (S3
+source of truth), TASK-2 (extraction bridge, split into five children under an architect
+contract), TASK-3 (SourceHealth v1) — and TASK-2's five children do not collide with each
+other or duplicate one another's shape. That part of the fix works as designed.
 
-**Status:** the overlap-in-subtasks problem has three distinct causes; two are now fixed
-deterministically and one is built but **still never observed running**.
+**D-011 (open, not urgent for `book` right now):** overlap across *independently-created
+top-level tasks* is still undetected by anything that runs automatically — only a manual
+`npm run overlap <project>` catches it. On `book`, TASK-1 and TASK-3 genuinely write
+conflicting logic into the same four files; TASK-3 now has explicit `dependencies:
+[TASK-1, TASK-2]` set (via `backlog task edit --dep`), so `readiness.isBlocked` stops it
+from starting before those finish — this fixes *when* TASK-3 can run, not what its branch
+is based on. See D-012 below for the piece that actually closes the loop for a project
+that opts into it. For a project that doesn't, D-011 is still exactly the open question
+it was: run `findCollisions` on every promotion, or widen scope-sharing to the whole
+project, not just one split's tree. Not decided.
 
-| Cause | Mechanism | State |
-|---|---|---|
-| Siblings independently invent the same shared artifact | architect contract seeded into every child (D-007) | built, **never once executed** |
-| No ordering — last writer clobbers | children dependency-chained (D-008) | built + tested |
-| A nested split can't see what its aunts/uncles own | `SiblingScope` for planner/architect (D-008) | built + tested |
+**D-012, shipped this session: autonomous integration for opted-in projects.**
+`ProjectEntry.autonomous` (`src/config.ts`) — when set, `case "reviewer":` in
+`src/tick.ts` rebases the task's branch onto `baseBranch`, re-runs gates against the
+rebased tip, squash-merges on green, and marks the task `Done` itself; a conflict or a
+post-rebase gate failure blocks the task (`needs-manual-merge`) and never force-resolves.
+Registering a project from a git URL (`npm run register-project -- <key> <owner/repo>`,
+cloned via `gh repo clone`) implies `autonomous: true` automatically, into
+`$BAKLOOP_HOME/clones/<key>` on its own `bakloop/trunk`; registering from an existing
+local path keeps today's supervised behavior unless `--autonomous` is passed explicitly
+(a known, loudly-flagged risk against a real checkout). `git push` remains hard-blocked
+everywhere, unconditionally — nothing in this path calls it. Typechecked, unit-tested
+(existing suite, unchanged and green), and manually verified end-to-end at the git level:
+local-path registration, `--autonomous` local-path registration, URL registration via a
+real `gh repo clone`, a clean rebase + squash-merge, and a rebase conflict correctly
+aborting with the task branch left at its original tip. **Not yet run through a real
+`npm start` loop against a live local model** — the git-command sequences were verified
+directly, not via a full tick. See D-012 in `wiki/decisions.md` for the design rationale.
 
-The reason D-007 has never run: the planner's split output crashed the loop on a header
-regex (`## Subtask 1:` vs the literal `## Subtask:`), five times, before the contract gate
-was ever reached — see the header-format entry in `wiki/gotchas.md`. Fixed, with a
-regression test replaying the real output. **Every planner iteration so far has been
-judged on a tree the current code never produced.**
-
-How it works: `tick.ts`'s `case "planner"` won't create children from a `SPLIT` until
-`hasArchitectContract(task)` (`phase.ts`) is true; until then the task gets
-`needs-architecture` and the split is discarded. `architect` (`prompts/architect.md`)
-writes the contract into `implementationNotes` and clears its own label. Children are
-seeded with that contract at creation (`Backlog.createChild`'s `notes` option). Once every
-child is `Done`, `phase.ts` routes to `architect` again (`prompts/architect-alignment.md`,
-picked by `task.subtasks.length > 0`) for a second, distinctly-marked pass
-(`hasAlignmentCheck`) that must answer `ALIGNED`/`DRIFT`; `DRIFT` blocks the container
-immediately rather than just annotating it.
-
-**The `book` project's current task tree predates this fix and has no architect
-contracts.** Do not move anything in it to `Ready for Work` or execute against it until
-it's reset (see Next action).
-
-**Also uncommitted, unrelated to the split flow: `promote-draft` is now fully
-non-interactive.** `src/promote-draft.ts` runs `owner`/`criteria`, prints the result, and
-promotes immediately — no `y/N` gate, no type/priority prompt. Type comes from whatever
-`owner` drafted; priority is left unset. This doesn't touch the D-002 invariant: the
-promoted task still lands in `Waiting for Approval` and needs a human to move it to
-`Ready for Work` before execution. Documented in README's "Adding tasks" section.
-
-**Same area, also uncommitted: fixed information loss on draft promotion.** Two gaps,
-found when a user pastes an already-rich draft (e.g. a plan they had another AI write) and
-watches promote-draft flatten it: (1) the human's original draft text was never kept
-anywhere on the resulting task — only the `owner` role's rewritten `description`
-survived — so it's now also written verbatim as a `"draft"`-authored comment
-(`src/promote-draft.ts`); (2) `prompts/owner.md`'s tick-loop instruction to treat notes as
-"informing the description without being copied verbatim" is right for incremental
-machine bookkeeping but wrong for a one-shot human draft, so it paraphrased away
-already-worked-out specifics. `src/prompts.ts`'s `templateFor` now picks a distinct
-`owner-from-draft` template (keyed on the fake stand-in task's `status: "Draft"`, which no
-real task ever has) instructing the model to preserve substantive content rather than
-summarize it. Not yet run against a real draft with a real local model — only
-typechecked.
-
-**Decision records are now the agent's to write and keep current** (CLAUDE.md, Write
-access). D-007 is recorded as `Accepted`; D-002 and D-004 have been rewritten to match the
-code, each carrying an `Amended` note explaining what changed and why. Nothing in
-`wiki/decisions.md` is waiting on a countersignature.
-
-**Needs your sign-off:**
-
-1. Parked, not urgent: a prior-session proposal to capture a plan's base commit and check
-   it before executing. Untouched since it was raised; pick it up from git history if
-   it's still wanted.
-
-**Next action — stop adding mechanism, run it.** In order:
-
-1. **Reset the `book` task tree** (it predates D-007 and has no contracts), keeping
-   `state/book/journal.db` for the 3.5-ticks-per-task baseline.
-2. **Re-plan a task that has to split**, then `npm run overlap book`. Zero blocking
-   collisions is the pass. Also read the tree once by hand for the symptoms the path check
-   cannot see: the same interface given two different signatures, a child re-stating a
-   sibling's scope in prose, or an expensive-to-reverse choice (a file extension, a key
-   layout) decided differently in two places. This observation has been skipped three
-   times.
-3. **Then** the original goal: exercise the _executor_ path against a real local model
-   (`npm run report book` for ticks/completed once there's execution data).
-
-**Overlap is now detected, not eyeballed** (D-009). `npm run overlap <project>` reports
-every file claimed by two unrelated tasks in a tree; the same check runs automatically
-right after a split and blocks the container on a real collision.
-
-**Baseline, measured on the pre-reset `book` tree (2026-09-09) — this is the "before":**
-
-```
-7 blocking path collision(s) across 14 task(s)
-  apps/infra/lib/source-content.ts            TASK-1, 1.2, 1.4.2, 1.4.3, 1.4.4, 1.4.5, 2
-  apps/infra/lib/bookmark-digest-stack.ts     TASK-1.1, 1.3, 1.4.1, 1.4.3, 1.4.4, 3
-  apps/infra/lib/dynamo.ts                    TASK-1.2, 1.3, 1.5, 1.6
-  apps/infra/lambdas/fetch-source/handler.ts  TASK-1.4.3, 1.4.4, 3
-  apps/infra/lambdas/generate-digest/handler.ts  TASK-1.4.4, 1.4.5, 3
-  apps/infra/lambdas/ingest-url/handler.ts    TASK-1.3, 1.4.4, 3
-  packages/schemas/src/index.ts               TASK-2, 3
-plus 7 shared-by-convention (manifests and .md), not blocking
-```
-
-That tree was produced by the pre-D-007 one-shot split. Seven tasks each intended to write
-`source-content.ts`; six each intended to write the CDK stack. **The target after re-planning
-is zero blocking collisions** — anything above zero means D-007/D-008 didn't hold and the
-tree needs re-splitting, not executing. Recorded here rather than in `tmp/`, which is
-gitignored and will not survive the reset.
+**Next action:** run an autonomous project through a real `npm start` loop end to end
+(register a throwaway repo by URL, let a task go executor → reviewer → integration,
+confirm `Done` lands and the trunk branch advances) to close the "not yet run through a
+real loop" gap above. Separately, `book` itself is registered as a supervised (non-
+autonomous) project — TASK-1 is unblocked and safe to move to `Ready for Work` now that
+TASK-3 depends on it; TASK-2 is currently `Blocked`/`needs-replan` from D-009's automatic
+post-split check on the TASK-2.4/TASK-2.5 `lambdas/extraction/handler.ts` finding, which
+looks like a false positive (2.4 creates the handler; 2.5 only points a CDK `entry` at
+its path) — decide whether to clear that label by hand or teach `findCollisions` to tell
+"creates" from "references the path of" apart before unblocking it.
