@@ -36,7 +36,7 @@ export const runAgent: RunAgent = async (input) => {
   const model = models.getModel("local", modelId);
   if (!model) throw new Error(`Unknown local model: ${modelId}`);
 
-  const tag = roleTag(input.role);
+  const tag = `${roleTag(input.role)} ${input.taskId}`;
 
   const agent = new Agent({
     initialState: {

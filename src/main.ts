@@ -112,8 +112,9 @@ async function main() {
         consecutiveCrashes = 0;
       } catch (err) {
         consecutiveCrashes += 1;
+        const taskId = err instanceof Error ? (err as Error & { taskId?: string }).taskId : undefined;
         console.error(
-          colorError(`${tag("main")} tick threw (${consecutiveCrashes}/${MAX_CONSECUTIVE_CRASHES}):`),
+          colorError(`${tag("main")} ${taskId ?? "?"} tick threw (${consecutiveCrashes}/${MAX_CONSECUTIVE_CRASHES}):`),
           err,
         );
         if (consecutiveCrashes >= MAX_CONSECUTIVE_CRASHES || stopRequested) throw err;

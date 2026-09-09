@@ -79,6 +79,7 @@ async function promoteOne(draftId: string, projectArg: string | undefined): Prom
   console.info(`${roleTag("owner")} drafting description for "${draft.title}"...`);
   const ownerResult = await runAgent({
     role: "owner",
+    taskId: draftId,
     tools: [],
     prompt: renderPrompt("owner", base),
     cwd: entry.path,
@@ -91,6 +92,7 @@ async function promoteOne(draftId: string, projectArg: string | undefined): Prom
   console.info(`${roleTag("criteria")} drafting acceptance criteria + definition of done...`);
   const criteriaResult = await runAgent({
     role: "criteria",
+    taskId: draftId,
     tools: [],
     prompt: renderPrompt("criteria", { ...base, description }),
     cwd: entry.path,

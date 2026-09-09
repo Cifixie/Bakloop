@@ -38,6 +38,7 @@ export interface RunAgent {
   /** Wire to pi-agent-core. Tools MUST be restricted to `tools`. */
   (input: {
     role: Role;
+    taskId: string;
     tools: readonly string[];
     prompt: string;
     cwd: string;
@@ -235,11 +236,16 @@ export async function tick(opts: TickOptions): Promise<{ done: boolean; note: st
   } catch (err) {
     record.error = err instanceof Error ? (err.stack ?? err.message) : String(err);
     record.note = err instanceof Error ? err.message : String(err);
+    // main.ts's crash log has no other way to know which task was in
+    // flight when a tick throws outside runTick's own per-task handling.
+    if (err instanceof Error && record.taskId) (err as Error & { taskId?: string }).taskId = record.taskId;
     throw err;
   } finally {
     record.tickMs = Date.now() - startedAt;
     // Never let bookkeeping take down a run that otherwise worked.
-    await opts.journal?.append(record).catch((e) => console.error(colorError(`${tag("journal")} append failed:`), e));
+    await opts.journal
+      ?.append(record)
+      .catch((e) => console.error(colorError(`${tag("journal")} ${record.taskId ?? "?"} append failed:`), e));
   }
 }
 
@@ -335,6 +341,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
   try {
     result = await runAgent({
       role: phase.role,
+      taskId: task.id,
       tools: ROLE_TOOLS[phase.role],
       prompt,
       cwd: repoCwd,
@@ -403,7 +410,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
   // prompt's format, the difference between the two IS the bug report.
   await opts.journal
     ?.transcript(task.id, phase.role, record.ts, prompt, result.text)
-    .catch((e) => console.error(colorError(`${tag("journal")} transcript failed:`), e));
+    .catch((e) => console.error(colorError(`${tag("journal")} ${task.id} transcript failed:`), e));
 
   // Non-executor roles write model-authored CONTENT into task fields.
   // Control flow stays deterministic; the content is versioned in git
@@ -524,7 +531,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       await backlog.setPlan(task.id, parsed.plan);
       // Spec + plan complete: parked here until a human moves it to Ready for Work.
       await backlog.setStatus(task.id, STATUS.waitingForApproval);
-      return { done: false, outcome: "plan-written", note: "plan written — waiting for approval" };
+      return { done: false, outcome: "plan-written", note: `${task.id}: plan written — waiting for approval` };
     }
     case "architect": {
       // A container (subtasks present) means this call is the post-split
@@ -551,7 +558,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
           };
         }
       }
-      return { done: false, outcome: "notes-appended", note: `${marker} notes appended` };
+      return { done: false, outcome: "notes-appended", note: `${task.id}: ${marker} notes appended` };
     }
     case "researcher":
     case "senior":
@@ -559,7 +566,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       // guidance for the executor, and stays small enough to send every tick
       // precisely because machine bookkeeping goes to comments instead.
       await backlog.appendNotes(task.id, `**${phase.role}:** ${result.text}`);
-      return { done: false, outcome: "notes-appended", note: `${phase.role} notes appended` };
+      return { done: false, outcome: "notes-appended", note: `${task.id}: ${phase.role} notes appended` };
     case "documenter": {
       // No `bash` in this role's allowlist (see ROLE_TOOLS) — its docsWrite/
       // docsEdit tools are the only way it can touch the repo, so the
@@ -569,14 +576,18 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       // (see `hasDocumented` in phase.ts).
       await backlog.comment(task.id, "documenter", result.text);
       const committed = await commitAll(repoCwd, `docs: update documentation for ${task.id}`);
-      return { done: false, outcome: "docs-updated", note: committed ? "documentation updated" : "documentation already current" };
+      return {
+        done: false,
+        outcome: "docs-updated",
+        note: `${task.id}: ${committed ? "documentation updated" : "documentation already current"}`,
+      };
     }
     case "reviewer":
       // Not Done: a human still has to open, review, and merge the PR.
       // Done is a fact only they (or a future GitHub sync) can assert.
       await backlog.setFinalSummary(task.id, result.text);
       await backlog.setStatus(task.id, STATUS.review);
-      return { done: false, outcome: "reviewed", note: "reviewed — awaiting human PR review" };
+      return { done: false, outcome: "reviewed", note: `${task.id}: reviewed — awaiting human PR review` };
     case "owner": {
       const { description, type } = parseOwnerOutput(result.text);
       if (description === "") {
@@ -588,7 +599,11 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       // Cosmetic and optional — never worth failing a tick over, so an
       // unrecognised type simply arrives here as null (see parseOwnerOutput).
       if (type && !task.type) await backlog.setType(task.id, type);
-      return { done: false, outcome: "description-written", note: `owner wrote description${type ? ` (type: ${type})` : ""}` };
+      return {
+        done: false,
+        outcome: "description-written",
+        note: `${task.id}: owner wrote description${type ? ` (type: ${type})` : ""}`,
+      };
     }
     case "criteria": {
       const { acceptanceCriteria, definitionOfDone } = parseCriteriaOutput(result.text);
@@ -609,7 +624,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       return {
         done: false,
         outcome: "criteria-written",
-        note: `criteria wrote ${acceptanceCriteria.length} AC, ${definitionOfDone.length} DoD item(s)`,
+        note: `${task.id}: criteria wrote ${acceptanceCriteria.length} AC, ${definitionOfDone.length} DoD item(s)`,
       };
     }
   }
@@ -642,9 +657,9 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       // A subtask doesn't get its own PR review — it finalizes here, and the
       // parent's single reviewer pass runs once every subtask is Done.
       await backlog.setStatus(task.id, STATUS.done);
-      return { done: false, outcome: "subtask-done", note: "subtask complete" };
+      return { done: false, outcome: "subtask-done", note: `${task.id}: subtask complete` };
     }
-    return { done: false, outcome: "gates-green", note: "gates green" };
+    return { done: false, outcome: "gates-green", note: `${task.id}: gates green` };
   }
 
   // Progress log, not guidance: a failure record is evidence for the senior
@@ -663,9 +678,13 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
     return {
       done: false,
       outcome: "blocked-attempts",
-      note: `blocked after ${log.attempts} attempts (${gates.failures.join(", ")})`,
+      note: `${task.id}: blocked after ${log.attempts} attempts (${gates.failures.join(", ")})`,
     };
   }
 
-  return { done: false, outcome: "gates-failed", note: `retrying: ${gates.failures.join(", ")}` };
+  return {
+    done: false,
+    outcome: "gates-failed",
+    note: `${task.id}: retrying: ${gates.failures.join(", ")}`,
+  };
 }
