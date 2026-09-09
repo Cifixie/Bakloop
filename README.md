@@ -235,27 +235,34 @@ cleanly (same path as Ctrl+C) once the charge drops to `BAKLOOP_BATTERY_FLOOR` p
 
 ## Adding tasks
 
-Two steps, kept deliberately separate: capture (raw, human-typed) and promotion (AI
-formats it into a real task). Drafts are invisible to the tick loop — only real tasks feed
-it — so nothing here can ever be picked up half-formed. Promotion itself is fully
-automatic, no prompts — the task lands in `ToDo` and is picked up by the executor
-directly (see D-014), so review, if wanted, has to happen before promotion, not after.
+Two steps, kept deliberately separate: capture (raw, human-typed) and promotion (a
+full plan-mode run against the real task). Drafts are invisible to the tick loop — only
+real tasks feed it — so nothing here can ever be picked up half-formed.
 
 ```bash
 pnpm run new-draft bogi       # capture: title + pasted text -> a Backlog.md draft
 pnpm run promote-draft         # list drafts (omit the id to just see what's pending)
-pnpm run promote-draft DRAFT-3 bogi   # AI drafts description + AC, then promotes immediately
+pnpm run promote-draft DRAFT-3 bogi   # promote, then plan the whole thing out
 ```
 
 `new-draft` prompts for a title (leave it blank to have a lightweight local model name
 it — or paste something starting with a `# Heading` line and that's used for free) and a
-pasted description (end with a line containing just `.`). `promote-draft` runs the same
-`owner` and `criteria` prompts the tick loop itself uses, as two separate calls for the
-same reason the loop does, prints the drafted description, acceptance criteria, and
-definition of done, and promotes immediately — type comes from whatever `owner` drafted,
-priority is left unset, and either can be changed on the task afterward.
+pasted description (end with a line containing just `.`).
 
-The loop runs ticks until there's no ready work left in the project's lane, checking
+`promote-draft` promotes the draft into a real task immediately, then drives it through
+the same plan-mode roles the main tick loop uses — owner, criteria, researcher/architect,
+planner, including any split — scoped to just this task's tree and never advancing into
+execution. The verbatim draft text is injected into every one of those ticks as extra
+context, not just used once for the description, so a split decision is made with the
+human's full original ask in hand. By the time it returns, every task in the tree is
+either fully planned or (if split) has spec'd children, printed as a tree summary. Review
+happens here — between promotion and starting the main loop — not before promotion: once
+`pnpm start` runs against the project, whatever is sitting in `ToDo` is picked up directly
+(see D-014), so this is the point to read the tree in Backlog.md and adjust anything
+before that happens.
+
+The main loop runs ticks until there's no ready work left in the project's lane, checking
 the working tree back out to the base branch on exit. State (attempt logs, detected
-gate config) lives under `$BAKLOOP_HOME/state/<project>`, out of the target repo's own
-git history.
+gate config, the tick journal) lives under `$BAKLOOP_HOME/state/<project>`, out of the
+target repo's own git history — `promote-draft`'s plan-mode ticks are journaled there
+too, so `pnpm run report <project>` covers both.

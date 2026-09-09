@@ -34,6 +34,14 @@ import { ROLE_TOOLS, STATUS, type Role, type Task, type TaskSummary } from "./ty
 /** D-013: how many times critic is allowed to say `CHANGES` on one leaf task before it blocks for a human. */
 const MAX_CRITIC_ROUNDS = 3;
 
+/**
+ * The roles a plan-mode-only call (`TickOptions.restrictToTree`) is allowed
+ * to run. Everything else — executor, senior, critic, reviewer, documenter —
+ * is real execution or a judgment pass on finished execution; a promotion
+ * run must never reach any of them.
+ */
+const PLANNING_ROLES = new Set<Role>(["owner", "criteria", "researcher", "architect", "planner"]);
+
 /** Attempt bookkeeping. Persisted to disk, not held in memory. */
 export interface AttemptLog {
   taskId: string;
@@ -226,6 +234,17 @@ export interface TickOptions {
    * a human merges" behavior.
    */
   autonomousIntegration?: boolean;
+  /**
+   * Scope this call to one task's split tree (the root task's id) and never
+   * let it run a role outside `PLANNING_ROLES` — used by promote-draft.ts's
+   * plan-mode loop so a freshly-promoted draft's whole tree is spec'd out
+   * before the main loop ever sees it. The tree filter is what stops the
+   * loop from wandering onto an unrelated ToDo task mid-run; the role guard
+   * is what stops it from starting real execution on a sibling that
+   * happened to finish planning first while others in the same tree are
+   * still being spec'd.
+   */
+  restrictToTree?: string;
 }
 
 /**
@@ -331,6 +350,9 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
     candidates = ready.length > 0 ? ready : all.filter((t) => t.status === STATUS.backlog);
   }
   candidates = excludeInFlightContainers(candidates, containers, all);
+  if (opts.restrictToTree) {
+    candidates = candidates.filter((t) => rootAncestorId(t.id, all) === opts.restrictToTree);
+  }
   const picked = selectTask(candidates);
   if (!picked) return { done: true, outcome: "no-ready-tasks", note: "no ready tasks" };
 
@@ -360,6 +382,18 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
   );
   if (phase.role === "documenter" || phase.role === "reviewer") {
     console.info(`${tag("tick")} documenter signal: ${docs.reason}`);
+  }
+
+  if (opts.restrictToTree && !PLANNING_ROLES.has(phase.role)) {
+    // Planning is done for this task — stop here rather than starting real
+    // execution (or a judgment pass on execution that hasn't happened yet).
+    // `done: true` tells the promotion loop's driver there's nothing more
+    // for it to do right now.
+    return {
+      done: true,
+      outcome: "planning-complete",
+      note: `${task.id}: fully specced for the main loop (next role would be ${phase.role})`,
+    };
   }
 
   const isExecutor = phase.role === "executor";

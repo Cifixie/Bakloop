@@ -27,12 +27,6 @@ function templateFor(role: Role, task: Task): string {
   // (subtasks present) means this architect call is the post-split
   // sibling-alignment pass, not the pre-split interface contract.
   if (role === "architect" && task.subtasks.length > 0) return "architect-alignment";
-  // `status: "Draft"` only ever appears on promote-draft's fake stand-in
-  // task (see fakeTask in promote-draft.ts) — never a real task in the tick
-  // loop. There, "notes" is the whole human (or human+AI) draft, not
-  // incremental machine bookkeeping, so it must be preserved, not
-  // paraphrased down like prompts/owner.md tells the tick-loop owner to do.
-  if (role === "owner" && task.status === "Draft") return "owner-from-draft";
   return role;
 }
 
@@ -99,9 +93,12 @@ interface ContextPolicy {
  * machine failure is exactly the evidence it was called in to diagnose.
  */
 const CONTEXT: Record<Role, ContextPolicy> = {
-  // Sees only the raw capture it is refining (carried in notes by
-  // promote-draft's stand-in task) plus dependencies for scope.
-  owner: { notes: true, dependencies: true },
+  // Writes the description from a blank slate — nothing else exists yet on
+  // a task this early — plus dependencies for scope. When this call is part
+  // of promote-draft's plan-mode loop, the verbatim draft reaches it as an
+  // extra context block the loop's own renderPrompt wrapper appends, not
+  // through this policy (see promote-draft.ts).
+  owner: { dependencies: true },
   criteria: { description: true },
   // `notes: true` matters for the alignment-check call specifically: it's
   // how the architect sees the contract it wrote before the split, without

@@ -149,3 +149,23 @@ with `attempts` already high, and get escalated to `senior` mid-cycle.
 not just revisions). If it turns out to matter in practice, the fix is a counter fully
 independent of `attempts` for the whole post-first-success phase, not a bigger
 `MAX_ATTEMPTS`. See D-013.
+
+---
+
+## `restrictToTree`'s planning-only guard only stops execution — it can't force more planning
+
+**Symptom:** You'd expect `promote-draft`'s plan-mode loop (D-015) to keep going until
+every subtask in a split tree has a written `implementationPlan`, but it can stop with
+some children still unplanned.
+**Cause:** `resolvePhase`'s dependency gate (`task.readiness.isBlocked` → `null`) runs
+before the blank-plan check, same as it always has in the main loop — a chained subtask
+(child 2 `dependsOn` child 1) isn't even a planning candidate until child 1 reaches `Done`.
+Since `Done` only happens through real execution, which the promotion loop never runs, a
+dependency-gated child is correctly left unplanned; the loop's stop condition ("no task in
+the tree resolves to a planning role") is satisfied the moment the front of the chain is
+planned, matching the main loop's own steady state.
+**Fix:** This is intended, not a bug — "fully spec'd" for a chained split means every
+task has a description/AC/DoD and the front of the chain has a plan; the rest plan
+just-in-time during real execution, exactly as before D-015. Nested splits (a subtask
+itself splitting again) are now exercised for real by this loop, since tree membership is
+recomputed via `rootAncestorId` after every tick with no special-casing for depth.

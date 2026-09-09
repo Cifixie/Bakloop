@@ -1,25 +1,36 @@
 import { execFile } from "node:child_process";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { runAgent } from "./agent.js";
 import { Backlog } from "./backlog.js";
-import { error as colorError, roleTag } from "./colors.js";
-import { backlogDir, loadProjects } from "./config.js";
-import { renderPrompt } from "./prompts.js";
-import { parseCriteriaOutput, parseOwnerOutput } from "./spec.js";
-import type { Task } from "./types.js";
+import { git } from "./branch.js";
+import { error as colorError, tag, warn as colorWarn } from "./colors.js";
+import { backlogDir, loadProjects, stateDir } from "./config.js";
+import { createJournal } from "./journal.js";
+import { createLogStore } from "./log.js";
+import { renderPrompt, type SiblingScope } from "./prompts.js";
+import { rootAncestorId, tick } from "./tick.js";
+import type { Role, Task } from "./types.js";
 
 const run = promisify(execFile);
 
+/** Safety cap on the plan-mode loop below — real progress always stops well before this. */
+const MAX_PLAN_TICKS = 40;
+
 /**
  * `tsx src/promote-draft.ts [draft-id] [project]` — the only path from a
- * raw draft (`src/create-draft.ts`) to a real task. Runs the same `owner`
- * and `criteria` prompts the tick loop itself uses to get a description +
- * acceptance criteria, prints them, and promotes fully automatically — no
- * interactive prompts anywhere in this path. Type is whatever `owner`
- * drafted; priority is left unset (a human can set either on the task
- * afterward). The task still lands in `ToDo` and is picked up by the
- * executor on its own next tick — no human step in between (see D-014) —
- * so review, if wanted, has to happen before promotion, not after.
+ * raw draft (`src/create-draft.ts`) to a real, fully spec'd task tree.
+ *
+ * Promotes the draft immediately, then drives the resulting task through
+ * bakloop's own plan-mode roles (owner -> criteria -> researcher/architect
+ * -> planner, including any split) exactly as the main tick loop would,
+ * scoped to just this task's tree and never advancing into execution. The
+ * verbatim draft text is injected into every one of those ticks as extra
+ * context, not just used once to write a description — so a split decision,
+ * in particular, is made with the human's full original ask in hand, not a
+ * summary of a summary. By the time this returns, every task in the tree is
+ * either planned or (if split) has spec'd children — ready for a human to
+ * read in Backlog.md before the main loop ever touches it.
  *
  * `tsx src/promote-draft.ts --all` loops this over every existing draft in
  * one run.
@@ -74,64 +85,83 @@ async function promoteOne(draftId: string, projectArg: string | undefined): Prom
   }
   const entry = projects[project]!;
 
-  const base = fakeTask(draftId, draft.title, draft.description);
-
-  console.info(`${roleTag("owner")} drafting description for "${draft.title}"...`);
-  const ownerResult = await runAgent({
-    role: "owner",
-    taskId: draftId,
-    tools: [],
-    prompt: renderPrompt("owner", base),
-    cwd: entry.path,
-  });
-  const { description, type: draftedType } = parseOwnerOutput(ownerResult.text);
-
-  // Two calls, not one, for the same reason the tick loop splits these into
-  // separate phases: the criteria role must read the description rather than
-  // remember having written it (see resolvePhase).
-  console.info(`${roleTag("criteria")} drafting acceptance criteria + definition of done...`);
-  const criteriaResult = await runAgent({
-    role: "criteria",
-    taskId: draftId,
-    tools: [],
-    prompt: renderPrompt("criteria", { ...base, description }),
-    cwd: entry.path,
-  });
-  const { acceptanceCriteria, definitionOfDone } = parseCriteriaOutput(criteriaResult.text);
-
-  console.info(`\n--- AI-drafted description ---\n${description}`);
-  console.info("\n--- Acceptance criteria ---");
-  if (acceptanceCriteria.length === 0) {
-    console.info("(none — the tick loop's criteria phase will retry this once it's a task)");
-  }
-  acceptanceCriteria.forEach((ac, i) => console.info(`${i + 1}. ${ac}`));
-  if (definitionOfDone.length > 0) {
-    console.info("\n--- Definition of done ---");
-    definitionOfDone.forEach((item) => console.info(`- ${item}`));
-  }
-
   const backlog = new Backlog(backlogDir());
   const before = new Set((await backlog.list()).map((t) => t.id));
   await cli(["draft", "promote", draftId]);
   const created = (await backlog.list()).find((t) => !before.has(t.id));
   if (!created) throw new Error("Could not determine the new task id after promotion.");
 
-  const editArgs = ["task", "edit", created.id, "--project", project, "--description", description];
-  for (const ac of acceptanceCriteria) editArgs.push("--ac", ac);
-  for (const item of definitionOfDone) editArgs.push("--dod", item);
-  if (draftedType) editArgs.push("--type", draftedType);
-  if (labelProject) editArgs.push("--remove-label", `project:${labelProject}`);
-  await cli(editArgs);
+  // Force the owner phase to run next, on the real task — the verbatim
+  // draft reaches it (and every later planning role) as extra context via
+  // renderWithDraft below, not by pre-seeding this field.
+  await backlog.setDescription(created.id, "");
+  if (labelProject) await cli(["task", "edit", created.id, "--remove-label", `project:${labelProject}`]);
 
-  // The task's `description` is the owner role's rewrite, not the human's
-  // original words — preserve the verbatim draft as a comment so nothing is
-  // lost if the rewrite paraphrased or dropped something. Comments (not
-  // implementationNotes) because every future tick reads notes in full,
-  // while comments are pulled as a bounded recent window (see CONTEXT in
-  // prompts.ts) — this is a one-time reference, not ongoing guidance.
-  if (draft.description) await backlog.comment(created.id, "draft", draft.description);
+  console.info(`Promoted ${draftId} -> ${created.id}, project="${project}". Running the plan-mode loop...`);
 
-  console.info(`Promoted ${draftId} -> ${created.id}, project="${project}".`);
+  const draftText = draft.description;
+  const renderWithDraft = (role: Role, task: Task, scope?: SiblingScope): string => {
+    const base = renderPrompt(role, task, scope);
+    return draftText
+      ? `${base}\n\n## Original request (verbatim — do not summarize further)\n\n${draftText}`
+      : base;
+  };
+
+  const { loadLog, saveLog } = createLogStore(stateDir(project));
+  const journal = createJournal(stateDir(project), {
+    transcripts: process.env.BAKLOOP_NO_TRANSCRIPTS !== "1",
+  });
+  const gateConfigPath = join(stateDir(project), "gates.json");
+
+  try {
+    for (let i = 0; i < MAX_PLAN_TICKS; i++) {
+      const result = await tick({
+        backlog,
+        repoCwd: entry.path,
+        project,
+        baseBranch: entry.baseBranch,
+        gateConfigPath,
+        runAgent,
+        loadLog,
+        saveLog,
+        renderPrompt: renderWithDraft,
+        journal,
+        restrictToTree: created.id,
+      });
+      console.info(`${tag("plan")} ${result.note}`);
+      if (result.done) break;
+      if (i === MAX_PLAN_TICKS - 1) {
+        console.warn(
+          colorWarn(
+            `${tag("plan")} hit the ${MAX_PLAN_TICKS}-tick safety cap without finishing — check ${created.id}'s tree by hand.`,
+          ),
+        );
+      }
+    }
+  } finally {
+    journal.close();
+    // Leave the repo on its base branch, not mid-task, for the human to look at.
+    await git(entry.path, ["checkout", entry.baseBranch]).catch(() => {});
+  }
+
+  await printTreeSummary(backlog, project, created.id);
+}
+
+async function printTreeSummary(backlog: Backlog, project: string, rootId: string): Promise<void> {
+  const all = await backlog.list(undefined, project);
+  const inTree = all.filter((t) => rootAncestorId(t.id, all) === rootId).sort((a, b) => a.ordinal - b.ordinal);
+
+  console.info(`\n--- ${rootId}'s tree, ready for review ---`);
+  for (const t of inTree) {
+    const full = await backlog.view(t.id);
+    const spec =
+      full.subtasks.length > 0
+        ? `split into ${full.subtasks.length} subtask(s)`
+        : full.implementationPlan
+          ? "plan written"
+          : "NOT planned";
+    console.info(`  ${t.id} [${t.status}] ${spec}${t.labels.length ? ` (${t.labels.join(", ")})` : ""} — ${t.title}`);
+  }
 }
 
 async function cli(args: string[]): Promise<string> {
@@ -148,36 +178,6 @@ function parseDraftView(text: string): { title: string; description: string; lab
     .map((s) => s.trim())
     .filter(Boolean);
   return { title, description, labels };
-}
-
-/** Minimal stand-in Task so `renderPrompt("owner", ...)` can run outside the tick loop. */
-function fakeTask(id: string, title: string, rawText: string): Task {
-  return {
-    id,
-    title,
-    status: "Draft",
-    priority: null,
-    assignees: [],
-    labels: [],
-    ordinal: 0,
-    acceptanceCriteriaCompleted: 0,
-    acceptanceCriteriaCount: 0,
-    isReady: true,
-    parentTaskId: null,
-    path: "",
-    description: null,
-    type: null,
-    dependencies: [],
-    readiness: { isReady: true, isBlocked: false, blockingDependencies: [], missingDependencies: [] },
-    acceptanceCriteria: [],
-    definitionOfDone: [],
-    implementationPlan: null,
-    implementationNotes: rawText || null,
-    finalSummary: null,
-    comments: [],
-    modifiedFiles: [],
-    subtasks: [],
-  };
 }
 
 main().catch((err) => {

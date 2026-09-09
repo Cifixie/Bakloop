@@ -555,3 +555,55 @@ Supersedes D-002.
 longer appear in a freshly-run `npm run setup`'s `config.yml`, so any task left at one
 of them needs a manual `backlog task edit <id> -s "ToDo"` before it becomes eligible
 again.
+
+## D-015 — Draft promotion runs the full plan-mode loop, with the verbatim draft kept in context for every planning tick
+
+**Date:** 2026-09-09
+**Status:** Accepted
+
+**Context:** Before this change, `promote-draft.ts` ran exactly one summarization pass:
+it wrapped the raw draft text in a `fakeTask` (stuffed into `implementationNotes`, with a
+`status: "Draft"` sentinel picking a special `owner-from-draft.md` template), ran `owner`
+against it once to get a rewritten `description`, ran `criteria` against *that rewrite*
+(never the raw draft, since `criteria`'s `CONTEXT` policy is `{ description: true }`
+only), then called `backlog draft promote` and archived the verbatim original as a
+one-time `@draft` comment that no later role's `CONTEXT` policy read at all — `planner`
+has no `comments` key in that table (`src/prompts.ts`). So a split decision — the one
+decision D-007/D-008 already treat as consequential enough to need an architect contract
+and overlap checking — was always made on a summary of a summary, never on the human's
+actual words.
+
+**Decision:** Promotion now creates the real task first (`backlog draft promote`,
+`src/promote-draft.ts`), blanks its description to force a normal `owner` pass, and then
+drives it through a tree-scoped, planning-only run of the ordinary tick loop
+(`tick()`/`runTick()` in `src/tick.ts`, new `TickOptions.restrictToTree`): candidates are
+filtered to the draft's own tree (`rootAncestorId(t.id, all) === restrictToTree`), and any
+tick whose `resolvePhase` role falls outside `owner | criteria | researcher | architect |
+planner` returns immediately with `outcome: "planning-complete"` instead of running it —
+this is what stops the loop from ever reaching `executor` (or any judgment-on-execution
+role) on a sibling that finished planning first while others in the same tree are still
+being spec'd. Every tick in this run uses a `renderPrompt` wrapper
+(`promote-draft.ts`'s `renderWithDraft`) that appends the verbatim draft text as an extra,
+unconditional context block after whatever the role's normal `CONTEXT` policy already
+includes — so `owner`, `criteria`, `researcher`, `architect`, and `planner` all see the
+full original ask, not a rationed summary, for as many ticks as planning this tree takes.
+The old `fakeTask`/`owner-from-draft.md`/`status: "Draft"` machinery is deleted — it's
+fully subsumed by running the real roles on the real task with the draft injected. The
+`@draft` comment-archiving step is also removed: it existed only because the draft's
+content used to be reachable no other way; now every planning role already sees it
+directly, so a redundant comment would just be one more thing to keep in sync.
+
+**Consequences:** By the time a human looks at Backlog.md between promotion and starting
+the main loop, `ToDo` already holds a fully spec'd task (or, if split, a tree of spec'd
+children) rather than a bare description+AC pair — the human's review is a judgment call
+on finished specs, not a nudge to specs-in-progress. Nested splits (a subtask itself
+getting split again) are exercised for real now, not just architecturally possible, since
+the tree filter is recomputed by walking `rootAncestorId` after every tick with no special
+casing — see the updated `wiki/gotchas.md` entry. This only changes the promotion
+pipeline: the main loop (`npm start`) never sets `restrictToTree` or a draft-injecting
+`renderPrompt`, so its prompts are byte-for-byte unchanged. A dependency-chained split
+(child 2 depends on child 1) still only gets planned as far as `resolvePhase`'s own
+`readiness.isBlocked` check allows — same as it already worked in the main loop — so
+"fully spec'd" means every task has a description/AC/DoD, and either a written plan or a
+completed split; a task gated behind an unfinished sibling is planned once that sibling
+reaches `Done` during real execution, exactly as before this change.

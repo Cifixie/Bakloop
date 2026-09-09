@@ -84,6 +84,7 @@ export type TickOutcome =
   | "model-error"
   | "blocked-model-errors"
   | "needs-split"
+  | "planning-complete"
   | "crashed";
 
 export interface Journal {
