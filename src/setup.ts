@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { error as colorError } from "./colors.js";
 import { bakloopHome, backlogDir } from "./config.js";
 import { STATUS } from "./types.js";
 
@@ -74,6 +75,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(colorError("Fatal:"), err);
   process.exitCode = 1;
 });

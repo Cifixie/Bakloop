@@ -10,6 +10,8 @@ Acceptance criteria:
 1. <concrete, testable criterion>
 2. <concrete, testable criterion>
 
+If the context below lists work already owned by other tasks in this same breakdown, do not plan or split that work again — it belongs to those tasks. Your scope is only what is left over.
+
 Never output both a plan and a split — choose one.
 
 {{context}}

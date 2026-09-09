@@ -1,5 +1,6 @@
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createModels } from "@earendil-works/pi-ai";
+import { roleTag, warn } from "./colors.js";
 import { localProvider } from "./local-model.js";
 import { summarize } from "./summarize.js";
 import type { RunAgent } from "./tick.js";
@@ -35,6 +36,8 @@ export const runAgent: RunAgent = async (input) => {
   const model = models.getModel("local", modelId);
   if (!model) throw new Error(`Unknown local model: ${modelId}`);
 
+  const tag = roleTag(input.role);
+
   const agent = new Agent({
     initialState: {
       systemPrompt: `You are the ${input.role} in an automated task pipeline. Your working directory is ${input.cwd} — every relative path in every tool is resolved against exactly that directory, and it already contains the checked-out repo; never explore outside it (no scanning "/", home, or other repos). Follow the instructions in the user message exactly; you will not get a chance to ask clarifying questions.`,
@@ -56,7 +59,7 @@ export const runAgent: RunAgent = async (input) => {
     if (Date.now() - lastPrint < 2000) return;
     lastPrint = Date.now();
     const secs = ((Date.now() - started) / 1000).toFixed(0);
-    process.stdout.write(`\r[${input.role}] ${label}... ${secs}s, ${chars} chars   `);
+    process.stdout.write(`\r${tag} ${label}... ${secs}s, ${chars} chars   `);
   };
 
   // Totals for the tick journal (src/journal.ts). Accumulated across every
@@ -73,7 +76,7 @@ export const runAgent: RunAgent = async (input) => {
           chars = 0;
           started = Date.now();
           lastPrint = 0;
-          process.stdout.write(`[${input.role}] thinking...`);
+          process.stdout.write(`${tag} thinking...`);
           break;
         case "thinking_delta":
           chars += e.delta.length;
@@ -83,7 +86,7 @@ export const runAgent: RunAgent = async (input) => {
           const secs = ((Date.now() - started) / 1000).toFixed(0);
           thinkingChars += e.content.length;
           const summary = await summarize(e.content);
-          process.stdout.write(`\r[${input.role}] thought for ${secs}s: ${summary}\n`);
+          process.stdout.write(`\r${tag} thought for ${secs}s: ${summary}\n`);
           break;
         }
         case "text_start":
@@ -97,15 +100,16 @@ export const runAgent: RunAgent = async (input) => {
           break;
         case "text_end": {
           const summary = await summarize(e.content);
-          process.stdout.write(`\r[${input.role}] reply: ${summary}\n`);
+          process.stdout.write(`\r${tag} reply: ${summary}\n`);
           break;
         }
       }
     } else if (event.type === "tool_execution_start") {
       toolCalls += 1;
-      console.info(`[${input.role}] tool ${event.toolName} ${JSON.stringify(event.args)}`);
+      console.info(`${tag} tool ${event.toolName} ${JSON.stringify(event.args)}`);
     } else if (event.type === "tool_execution_end") {
-      console.info(`[${input.role}] tool ${event.toolName} ${event.isError ? "failed" : "done"}`);
+      const status = event.isError ? warn("failed") : "done";
+      console.info(`${tag} tool ${event.toolName} ${status}`);
     }
   });
 

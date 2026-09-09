@@ -83,8 +83,8 @@ and merge its PR — `bakloop` never merges, pushes, or marks anything `Done` it
 
 If a task is too large for one executor pass, the planner can split it into subtasks
 (Backlog.md's `--parent`) instead of writing a plan. Subtasks run the full pipeline
-independently — including their own approval gate — but share the parent's branch, so
-many subtasks still add up to one PR. A subtask finalizes to `Done` itself once its
+independently — including their own approval gate — but share their top-level
+ancestor's branch, so many subtasks still add up to one PR. A subtask finalizes to `Done` itself once its
 gates go green (no separate review); the parent only reaches `documenter`/`reviewer`
 once every subtask is `Done`, and turns `Blocked` immediately if any subtask does.
 
@@ -106,7 +106,16 @@ exists to be read afterwards.
 
 ```bash
 pnpm run report book       # ticks per role, prompt sizes, outcomes, gate failures
+pnpm run overlap book      # do two unrelated tasks claim the same file?
 ```
+
+`overlap` is the one check with no model in it: it extracts repo-relative paths from every
+task's description, plan and acceptance criteria, and reports any file claimed by two tasks
+that aren't parent and child. Two tasks naming the same path will write it twice, and
+whichever runs last wins. Manifests, lockfiles and `.md` files are listed but never
+flagged — several tasks touching those is normal. Exit code is non-zero when there's a real
+collision, so it works in a pre-flight script. The same check runs automatically after a
+split and blocks the parent task on a hit (see D-009).
 
 The number worth watching across changes is **ticks per completed task**. Prompt size by
 role is the other one: it's the only way to tell whether rationing context per role
@@ -133,8 +142,8 @@ outside the target repo, so they never show up in its `git diff` and skew the ga
 
 - **One branch per top-level ticket** (`bakloop/<task-id>`), forked from the project's
   base branch. A bad attempt's commits stay isolated on that branch; nothing is ever
-  reverted or force-pushed. Subtasks created by a split share their parent's branch
-  rather than getting their own.
+  reverted or force-pushed. Subtasks created by a split share their top-level
+  ancestor's branch rather than getting their own, however deeply they nest (see D-004).
 - **`git push` is hard-blocked**, not just discouraged in a prompt: a wrapper script
   shadows `git` on the executor's `PATH` and refuses any command containing `push`
   (see `src/git-guard.ts`). Branches are reviewed and pushed by a human.

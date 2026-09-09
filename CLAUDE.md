@@ -27,12 +27,15 @@ These are peer constraints — no single one sits above the others.
   under `$BAKLOOP_HOME/state/<project>`, out of the target repo entirely, so writing task
   metadata never shows up in that repo's `git diff` and skews the gates (`src/backlog.ts`,
   `src/log.ts`).
-- **A subtask's branch is its immediate `parentTaskId`'s branch, not a root ancestor's.**
-  See D-004 and the nested-splits entry in `wiki/gotchas.md` before relying on this for a
+- **A subtask's branch is its top-level ancestor's branch, not its immediate parent's.**
+  `rootAncestorId` (`src/tick.ts`) walks `parentTaskId` to the root, so however many
+  levels of splitting produced a subtask, it lands on one branch and one eventual PR. See
+  D-004, and the nested-splits entry in `wiki/gotchas.md` before relying on it for a
   subtask that itself gets split.
 
 Each of these has a full rationale in `wiki/decisions.md`. Read it before proposing a
-change to any of them.
+change to any of them — these specific constraints are the one part of that file whose
+*behavior* you raise before changing, even though the file itself is yours to maintain.
 
 ## Working in this repo
 
@@ -48,10 +51,22 @@ instead.
 - `wiki/current-work.md` — update this as you go. Keep it to the current state, not a
   changelog. Overwrite freely.
 - `wiki/gotchas.md` — append when you discover a new trap. Never rewrite existing entries.
-- `wiki/decisions.md` — **do not edit.** Propose changes in chat; the human writes these.
-  If your work contradicts a decision, stop and say so rather than amending the record.
-  Entries marked `Status: Proposed` are drafts awaiting sign-off — do not treat them as
-  binding, and do not promote one to `Accepted` yourself.
+- `wiki/decisions.md` — **write it yourself, and keep it current.** Record a decision as
+  `Accepted` the moment the behavior it describes is real: shipped, typechecked, and
+  tested. Don't park it as a proposal for a human to countersign — an undecided record of
+  decided behavior is worse than no record, because the next agent can't tell which of
+  the two to trust.
+  - **Reality wins over the record.** If your work contradicts an entry, the entry is now
+    wrong: rewrite it in the same change, or mark it `Superseded by D-0NN` and write the
+    successor. Never leave a decision describing behavior the code no longer has, and
+    never quietly implement against a stale entry.
+  - **`Proposed` is only for a genuinely open question** — a fork you can't resolve from
+    the code, where you need the human to pick. It is not a waiting room for finished
+    work. If you write one, say so in chat *and* park it in `wiki/current-work.md`.
+  - **Changing an accepted decision needs a reason in the entry, not permission in chat.**
+    Rewriting the *record* to match reality is routine. Changing the *behavior* a hard
+    constraint depends on is not — for those, see the hard-constraints list above and
+    raise it before you build.
 
 ## Maintaining this documentation
 
@@ -64,6 +79,8 @@ Update in the same change that caused it, never "later":
 | When | Do |
 |---|---|
 | finishing any task | `wiki/current-work.md` — next action, blockers, what you learned |
+| deciding something the next agent must not re-litigate | add it to `wiki/decisions.md` as `Accepted`, in this same change |
+| finding a decision that no longer matches the code | rewrite it, or supersede it and write its successor — same change |
 | discovering a trap | append to `wiki/gotchas.md` |
 | removing or renaming anything | `git grep` the old name; fix or delete **every** reference |
 | a doc contradicts reality | reality wins — fix the doc in that same change |
@@ -83,14 +100,15 @@ patching it.
 session, so length is a tax on every future task. Append freely; when a trap has become
 structurally impossible, propose removing it. Never change what an existing entry means.
 
-**Park decision proposals in `wiki/current-work.md` under "Needs your sign-off".** Chat is
-lost when the session ends; that file is not.
+**Only genuinely open questions go under "Needs your sign-off" in `wiki/current-work.md`**
+— a fork you cannot resolve from the code. Anything you've already decided and shipped
+belongs in `wiki/decisions.md` as `Accepted`, written by you in the same change. Chat is
+lost when the session ends; both files are not.
 
 **One fact, one home.** If the same threshold, name, or procedure appears in two files,
 one is already stale — fix it by deleting the copy, not by syncing them.
 
 **Human-only. Never do these, even if asked to "finish the task":**
-- promoting a decision from `Proposed` to `Accepted`
 - moving a task to `Ready for Work` on a human's behalf, merging a PR, or marking
   anything `Done` other than a subtask on green gates (`src/tick.ts` does this
   automatically; a top-level task's `Done` is still human/GitHub-sync only)

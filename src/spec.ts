@@ -34,7 +34,7 @@ export function parseOwnerOutput(text: string): {
   return { description: lines.slice(0, typeIdx).join("\n").trim(), type };
 }
 
-const DOD_HEADER = /^\s*(?:\*\*)?Definition of done(?:\*\*)?:\s*$/i;
+const DOD_HEADER = /^\s*(?:#{2,4}\s*)?\*{0,2}Definition of done\*{0,2}:\*{0,2}\s*$/i;
 
 /**
  * Splits the `criteria` role's output into acceptance criteria and
@@ -82,7 +82,7 @@ const ALIGNMENT_LINE = /^\s*(ALIGNED|DRIFT)\b/i;
  * Defaults to `drift: true` when the marker is missing or unparseable: an
  * architect that didn't follow the format is not evidence of alignment, and
  * this check exists specifically so silence reads as "unverified," not
- * "fine" (see D-00X — block-on-drift was the deliberate choice over
+ * "fine" (see D-007 — block-on-drift was the deliberate choice over
  * informational-only).
  */
 export function parseAlignmentOutput(text: string): { drift: boolean; report: string } {
@@ -99,12 +99,28 @@ export interface PlannerSplit {
   acceptanceCriteria: string[];
 }
 
-export type PlannerOutput = { kind: "plan"; plan: string } | { kind: "split"; children: PlannerSplit[] };
+export type PlannerOutput =
+  | { kind: "plan"; plan: string }
+  | { kind: "split"; children: PlannerSplit[] }
+  /**
+   * A `SPLIT` marker whose blocks could not be read. Returned rather than
+   * thrown: a throw propagates past tick.ts into main.ts's crash counter,
+   * which takes down an unattended run over one badly formatted reply. The
+   * caller blocks the one task and keeps the loop alive.
+   */
+  | { kind: "unparseable"; text: string };
 
 const SPLIT_MARKER = /^\s*SPLIT\s*$/i;
-const SUBTASK_HEADER = /^\s*##\s*Subtask:\s*(.+?)\s*$/i;
-const DESCRIPTION_LINE = /^\s*Description:\s*(.*)$/i;
-const AC_HEADER = /^\s*Acceptance criteria:\s*$/i;
+/**
+ * Deliberately tolerant of how a local model decorates a header it was told
+ * to write literally: any of `## Subtask: x`, `### Subtask 3: x`,
+ * `## Subtask 1.4 - x`, `## **Subtask:** x`. A run died five times over the
+ * single digit in `## Subtask 1:` — see the header-format gotcha. The
+ * *marker word* is still required; only its ornaments are optional.
+ */
+const SUBTASK_HEADER = /^\s*#{2,4}\s*(?:\*\*)?\s*Subtask\s*(?:\d+(?:\.\d+)*)?\s*(?:\*\*)?\s*[:\-\u2013\u2014]\s*(?:\*\*)?\s*(.+?)\s*(?:\*\*)?\s*$/i;
+const DESCRIPTION_LINE = /^\s*\*{0,2}Description\*{0,2}:\*{0,2}\s*(.*)$/i;
+const AC_HEADER = /^\s*(?:#{2,4}\s*)?\*{0,2}Acceptance criteria\*{0,2}:\*{0,2}\s*$/i;
 
 /**
  * Parses the planner's free-text output per prompts/planner.md's requested
@@ -152,8 +168,6 @@ export function parsePlannerOutput(text: string): PlannerOutput {
   }
   flush();
 
-  if (children.length === 0) {
-    throw new Error(`Planner requested a split but no subtasks were parseable:\n${text}`);
-  }
+  if (children.length === 0) return { kind: "unparseable", text: text.trim() };
   return { kind: "split", children };
 }

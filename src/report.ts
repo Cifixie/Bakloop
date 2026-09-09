@@ -1,3 +1,4 @@
+import { error as colorError } from "./colors.js";
 import { createJournal, journalPath, type TickRecord } from "./journal.js";
 import { loadProjects, stateDir } from "./config.js";
 
@@ -217,7 +218,7 @@ async function main() {
 // Only run as a script, so the pure helpers above stay importable from tests.
 if (process.argv[1]?.endsWith("report.ts")) {
   main().catch((err) => {
-    console.error(err);
+    console.error(colorError("Fatal:"), err);
     process.exitCode = 1;
   });
 }

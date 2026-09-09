@@ -33,8 +33,8 @@ const authoredBy = (task: Task, role: Role): boolean =>
 const hasDocumented = (task: Task): boolean => authoredBy(task, "documenter");
 
 /**
- * Marker for the architect's pre-split interface contract (see D-00X,
- * "Needs your sign-off" in wiki/current-work.md): `tick.ts` writes this
+ * Marker for the architect's pre-split interface contract (see D-007):
+ * `tick.ts` writes this
  * before ever creating children from a planner split, so every sibling is
  * seeded with the same shared shape instead of each independently
  * reinventing it. One-shot per task, same pattern as `hasDocumented` — no
@@ -62,6 +62,17 @@ export const hasAlignmentCheck = (task: Task): boolean =>
 export const NEEDS_SPLIT_LABEL = "needs-split";
 
 /**
+ * Set by the deterministic overlap check when a fresh split leaves two
+ * unrelated tasks claiming the same file (`findCollisions`, `overlap.ts`).
+ * The container is Blocked at the same time, so this label is the *reason*
+ * rather than the mechanism — but it is checked here too, so a human who
+ * unblocks the status without resolving the collision doesn't silently get a
+ * container walked through to `reviewer`. Remove the label to say "looked at
+ * it, the paths are fine." See D-009.
+ */
+export const NEEDS_REPLAN_LABEL = "needs-replan";
+
+/**
  * Routing is DERIVED from which fields are empty, plus machine `Signals`.
  * It is never chosen by a model: it is the one decision with no verification
  * signal, so a bad choice corrupts the loop silently instead of failing a
@@ -81,6 +92,12 @@ export function resolvePhase(task: Task, attempts: number, signals: Signals): Ph
   // owner/planner/executor phases are skipped for good. tick.ts only lets a
   // task with subtasks reach here once every one of them is Done.
   if (task.subtasks.length > 0) {
+    // A known-overlapping breakdown is a human's problem, not the next
+    // role's: every downstream phase would be summarising work that two
+    // siblings are about to write twice.
+    if (task.labels.includes(NEEDS_REPLAN_LABEL)) {
+      return null;
+    }
     if (signals.docsRelevant && !hasDocumented(task)) {
       return { role: "documenter", reason: "all subtasks complete, documented surface changed" };
     }

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { runAgent } from "./agent.js";
 import { Backlog } from "./backlog.js";
+import { error as colorError, tag } from "./colors.js";
 import { backlogDir, loadProjects, resolveProjectKey, stateDir } from "./config.js";
 import { createJournal } from "./journal.js";
 import { createLogStore } from "./log.js";
@@ -46,7 +47,7 @@ async function main() {
       process.exit(130);
     }
     stopRequested = true;
-    console.info("[main] stopping after the current tick finishes (press again to force-quit)");
+    console.info(`${tag("main")} stopping after the current tick finishes (press again to force-quit)`);
   };
   process.on("SIGINT", requestStop);
   process.on("SIGTERM", requestStop);
@@ -78,11 +79,14 @@ async function main() {
         consecutiveCrashes = 0;
       } catch (err) {
         consecutiveCrashes += 1;
-        console.error(`[main] tick threw (${consecutiveCrashes}/${MAX_CONSECUTIVE_CRASHES}):`, err);
+        console.error(
+          colorError(`${tag("main")} tick threw (${consecutiveCrashes}/${MAX_CONSECUTIVE_CRASHES}):`),
+          err,
+        );
         if (consecutiveCrashes >= MAX_CONSECUTIVE_CRASHES || stopRequested) throw err;
         continue;
       }
-      console.info(`[main] ${result.note}`);
+      console.info(`${tag("main")} ${result.note}`);
       if (result.done || stopRequested) break;
     }
   } finally {
@@ -95,6 +99,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(colorError("Fatal:"), err);
   process.exitCode = 1;
 });

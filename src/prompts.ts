@@ -36,6 +36,28 @@ function templateFor(role: Role, task: Task): string {
   return role;
 }
 
+/**
+ * Scope that lives on OTHER tasks in the same split tree. Passed in rather
+ * than read from `task`, because `formatContext` has no IO and a Task carries
+ * no view of its relatives.
+ *
+ * This exists because a contract seeded into one task's notes cannot fix
+ * duplication across BRANCHES of a tree: when a subtask is itself split, its
+ * architect writes a contract knowing nothing about what its aunts and uncles
+ * already own, and re-specifies their work verbatim. Observed on `book`:
+ * `TASK-1.4.1` duplicated `TASK-1.1` word for word. See D-008.
+ */
+export interface SiblingScope {
+  /**
+   * Tasks elsewhere in this tree that already own scope. Titles only — they
+   * come free from the project listing `tick.ts` already holds, and a title
+   * is enough to recognise "the bucket is already someone else's job."
+   */
+  owned: { id: string; title: string; status: string }[];
+  /** The ancestor chain, root first: the original task this one was carved out of. */
+  ancestors: { id: string; title: string; description: string | null }[];
+}
+
 /** Which of a task's fields a given role's prompt is allowed to contain. */
 interface ContextPolicy {
   description?: boolean;
@@ -48,6 +70,13 @@ interface ContextPolicy {
   comments?: number;
   finalSummary?: boolean;
   dependencies?: boolean;
+  /**
+   * Only the two roles that decide scope get this. Deliberately NOT given to
+   * the executor: knowing what a sibling owns would invite it to reach into
+   * that sibling's files, which is the opposite of the isolation the split
+   * exists to create.
+   */
+  siblingScope?: boolean;
 }
 
 /**
@@ -78,7 +107,7 @@ const CONTEXT: Record<Role, ContextPolicy> = {
   // how the architect sees the contract it wrote before the split, without
   // a live parent lookup. Harmless for the pre-split call, where notes is
   // always still empty.
-  architect: { description: true, acceptanceCriteria: true, dependencies: true, notes: true },
+  architect: { description: true, acceptanceCriteria: true, dependencies: true, notes: true, siblingScope: true },
   researcher: { description: true, acceptanceCriteria: true, dependencies: true },
   planner: {
     description: true,
@@ -86,6 +115,7 @@ const CONTEXT: Record<Role, ContextPolicy> = {
     definitionOfDone: true,
     notes: true,
     dependencies: true,
+    siblingScope: true,
   },
   executor: {
     description: true,
@@ -119,7 +149,7 @@ function checklist(items: { text: string; checked: boolean }[]): string {
   return items.map((i) => `- [${i.checked ? "x" : " "}] ${i.text}`).join("\n");
 }
 
-function formatContext(role: Role, task: Task): string {
+function formatContext(role: Role, task: Task, scope?: SiblingScope): string {
   const policy = CONTEXT[role];
   const sections: string[] = [];
 
@@ -151,15 +181,37 @@ function formatContext(role: Role, task: Task): string {
   if (policy.dependencies && task.dependencies.length > 0) {
     sections.push(`Dependencies: ${task.dependencies.join(", ")}`);
   }
+  if (policy.siblingScope && scope) {
+    // Root first, so the chain reads as a narrowing of the original ask.
+    for (const a of scope.ancestors) {
+      const body = a.description?.trim();
+      sections.push(
+        `This task is one piece of ${a.id} ("${a.title}"), whose full scope is:\n${body || "(no description)"}`,
+      );
+    }
+    if (scope.owned.length > 0) {
+      const list = scope.owned.map((t) => `- ${t.id} [${t.status}]: ${t.title}`).join("\n");
+      sections.push(
+        "Already owned by other tasks in this same breakdown — do NOT re-specify, " +
+          `re-create, or plan this work; treat it as done or being done elsewhere:\n${list}`,
+      );
+    }
+  }
 
   return sections.length > 0 ? sections.join("\n\n") : "(no further context)";
 }
 
-/** Loads a role's paragraph template from disk and fills in this task's fields. */
-export function renderPrompt(role: Role, task: Task): string {
+/**
+ * Loads a role's paragraph template from disk and fills in this task's fields.
+ *
+ * `scope` is optional and only reaches the two roles whose policy asks for it
+ * (`planner`, `architect`); callers outside the tick loop — `promote-draft` —
+ * simply omit it.
+ */
+export function renderPrompt(role: Role, task: Task, scope?: SiblingScope): string {
   const template = loadTemplate(templateFor(role, task));
   return template
     .replaceAll("{{id}}", task.id)
     .replaceAll("{{title}}", task.title)
-    .replaceAll("{{context}}", formatContext(role, task));
+    .replaceAll("{{context}}", formatContext(role, task, scope));
 }

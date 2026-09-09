@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runAgent } from "./agent.js";
 import { Backlog } from "./backlog.js";
+import { error as colorError, roleTag } from "./colors.js";
 import { backlogDir, loadProjects } from "./config.js";
 import { renderPrompt } from "./prompts.js";
 import { parseCriteriaOutput, parseOwnerOutput } from "./spec.js";
@@ -75,7 +76,7 @@ async function promoteOne(draftId: string, projectArg: string | undefined): Prom
 
   const base = fakeTask(draftId, draft.title, draft.description);
 
-  console.info(`[owner] drafting description for "${draft.title}"...`);
+  console.info(`${roleTag("owner")} drafting description for "${draft.title}"...`);
   const ownerResult = await runAgent({
     role: "owner",
     tools: [],
@@ -87,7 +88,7 @@ async function promoteOne(draftId: string, projectArg: string | undefined): Prom
   // Two calls, not one, for the same reason the tick loop splits these into
   // separate phases: the criteria role must read the description rather than
   // remember having written it (see resolvePhase).
-  console.info("[criteria] drafting acceptance criteria + definition of done...");
+  console.info(`${roleTag("criteria")} drafting acceptance criteria + definition of done...`);
   const criteriaResult = await runAgent({
     role: "criteria",
     tools: [],
@@ -178,6 +179,6 @@ function fakeTask(id: string, title: string, rawText: string): Task {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(colorError("Fatal:"), err);
   process.exitCode = 1;
 });

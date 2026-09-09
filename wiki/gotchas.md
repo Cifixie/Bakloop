@@ -95,3 +95,21 @@ is idempotent. DoD only has `--dod` (append) and `--remove-dod <index>`, so
 task has no acceptance criteria at all, and `tick.ts` additionally checks
 `definitionOfDone.length === 0` before appending. If you ever let another role write DoD,
 clear the existing items by index first — don't assume the write replaces.
+
+---
+
+## A planner's split header format could kill the whole run, not just the task
+
+**Symptom:** `main` logs `tick threw (1/5): Planner requested a split but no subtasks were
+parseable`, five times, then the loop exits — discarding a split proposal that reads
+perfectly well in the log.
+**Cause:** Two compounding bugs. `spec.ts`'s `SUBTASK_HEADER` demanded the literal
+`## Subtask:`, so a model writing `## Subtask 1:` (or bolding the marker) parsed to zero
+children; and `parsePlannerOutput` *threw* on zero children, which propagates past
+`tick.ts` into `main.ts`'s `MAX_CONSECUTIVE_CRASHES` counter.
+**Fix:** The header matchers now tolerate numbering, `###`, em-dashes, and `**bold**`
+(including `**Header:**`, where the colon sits inside the bold — the obvious
+`(?:\*\*)?…(?:\*\*)?:` shape does *not* match that). And a failed parse returns
+`{ kind: "unparseable" }` rather than throwing: `tick.ts` blocks the one task with the
+verbatim proposal in a comment. Rule for any new model-output parser here: never throw
+from one. A malformed reply must cost one task, never the run.

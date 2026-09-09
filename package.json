@@ -15,7 +15,8 @@
     "promote-draft": "tsx src/promote-draft.ts",
     "report": "tsx src/report.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test src/*.test.ts"
+    "test": "node --import tsx --test src/*.test.ts",
+    "overlap": "tsx src/overlap.ts"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

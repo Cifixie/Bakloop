@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { promisify } from "node:util";
+import { error as colorError, tag } from "./colors.js";
 import { backlogDir, loadProjects } from "./config.js";
 import { deriveTitle } from "./summarize.js";
 
@@ -64,7 +65,7 @@ async function main() {
       if (heading) {
         title = heading[1]!.trim();
       } else {
-        console.info("[ai] naming this draft...");
+        console.info(`${tag("ai")} naming this draft...`);
         title = await deriveTitle(description);
       }
     }
@@ -133,6 +134,6 @@ async function readMultiline(prompt: string): Promise<string | null> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(colorError("Fatal:"), err);
   process.exitCode = 1;
 });

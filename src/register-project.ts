@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { error as colorError, warn } from "./colors.js";
 import { backlogDir, loadProjects, saveProjects } from "./config.js";
 
 const run = promisify(execFile);
@@ -19,7 +20,7 @@ const run = promisify(execFile);
 async function main() {
   const [key, pathArg] = process.argv.slice(2);
   if (!key) {
-    console.error("usage: tsx src/register-project.ts <key> [path]");
+    console.error(colorError("usage: tsx src/register-project.ts <key> [path]"));
     process.exitCode = 1;
     return;
   }
@@ -54,13 +55,15 @@ async function main() {
     console.info(`Added "${key}" to ${configPath}`);
   } catch {
     console.warn(
-      `No backlog config found at ${configPath}. Run "npm run setup" first, ` +
-        `then add "${key}" to its projects list.`,
+      warn(
+        `No backlog config found at ${configPath}. Run "npm run setup" first, ` +
+          `then add "${key}" to its projects list.`,
+      ),
     );
   }
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(colorError("Fatal:"), err);
   process.exitCode = 1;
 });

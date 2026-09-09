@@ -1,5 +1,6 @@
 import { Backlog } from "./backlog.js";
 import { commitAll, ensureTaskBranch } from "./branch.js";
+import { error as colorError, roleTag, tag } from "./colors.js";
 import {
   captureBaseline,
   docsRelevant,
@@ -9,7 +10,9 @@ import {
   type Baseline,
 } from "./gates.js";
 import type { Journal, TickOutcome, TickRecord } from "./journal.js";
-import { hasArchitectContract, NEEDS_SPLIT_LABEL, resolvePhase, selectTask } from "./phase.js";
+import { hasArchitectContract, NEEDS_REPLAN_LABEL, NEEDS_SPLIT_LABEL, resolvePhase, selectTask } from "./phase.js";
+import { findCollisions, render as renderCollisions } from "./overlap.js";
+import type { SiblingScope } from "./prompts.js";
 import { parseAlignmentOutput, parseCriteriaOutput, parseOwnerOutput, parsePlannerOutput } from "./spec.js";
 import { ROLE_TOOLS, STATUS, type Role, type Task, type TaskSummary } from "./types.js";
 
@@ -104,6 +107,60 @@ export function rootAncestorId(taskId: string, all: TaskSummary[]): string {
 }
 
 /**
+ * What the rest of this task's breakdown already owns, for the two roles that
+ * decide scope. Computed here rather than in `prompts.ts` because it needs a
+ * project listing and one `view` per ancestor.
+ *
+ * The set is "everything in my root ancestor's tree that is neither me, nor
+ * my own descendants, nor my ancestors" — i.e. my siblings, aunts, uncles and
+ * cousins. Excluding descendants matters: my own children are work I am
+ * delegating, not work already spoken for. Ancestors are reported separately,
+ * with their descriptions, since they're the original ask this task is a
+ * piece of. See D-008.
+ */
+export async function siblingScopeFor(
+  task: Task,
+  all: TaskSummary[],
+  view: (id: string) => Promise<Task>,
+): Promise<SiblingScope | undefined> {
+  const rootId = rootAncestorId(task.id, all);
+  // A top-level task with no tree around it has no scope to conflict with,
+  // and this is the common case — skip the ancestor `view` calls entirely.
+  if (rootId === task.id && !all.some((t) => t.parentTaskId === task.id)) return undefined;
+
+  const ancestorIds: string[] = [];
+  const byId = new Map(all.map((t) => [t.id, t]));
+  for (let cur = byId.get(task.id)?.parentTaskId; cur; cur = byId.get(cur)?.parentTaskId) {
+    ancestorIds.push(cur);
+  }
+
+  const descendants = new Set<string>();
+  const collect = (id: string) => {
+    for (const t of all) {
+      if (t.parentTaskId === id && !descendants.has(t.id)) {
+        descendants.add(t.id);
+        collect(t.id);
+      }
+    }
+  };
+  collect(task.id);
+
+  const inTree = all.filter((t) => rootAncestorId(t.id, all) === rootId);
+  const owned = inTree
+    .filter((t) => t.id !== task.id && !descendants.has(t.id) && !ancestorIds.includes(t.id))
+    .map((t) => ({ id: t.id, title: t.title, status: t.status }));
+
+  const ancestors = [];
+  // Root first: the chain should read as a narrowing of the original ask.
+  for (const id of [...ancestorIds].reverse()) {
+    const full = await view(id);
+    ancestors.push({ id: full.id, title: full.title, description: full.description });
+  }
+
+  return owned.length === 0 && ancestors.length === 0 ? undefined : { owned, ancestors };
+}
+
+/**
  * A container (has subtasks) is only a valid candidate once every subtask
  * has reached Done — otherwise it would out-rank its own children (lower
  * ordinal, created first) on every tick and starve them forever.
@@ -131,7 +188,7 @@ export interface TickOptions {
   runAgent: RunAgent;
   loadLog: (taskId: string) => Promise<AttemptLog>;
   saveLog: (log: AttemptLog) => Promise<void>;
-  renderPrompt: (role: Role, task: Task) => string;
+  renderPrompt: (role: Role, task: Task, scope?: SiblingScope) => string;
   /** Optional: omit to run without recording anything (tests, one-off scripts). */
   journal?: Journal;
 }
@@ -182,7 +239,7 @@ export async function tick(opts: TickOptions): Promise<{ done: boolean; note: st
   } finally {
     record.tickMs = Date.now() - startedAt;
     // Never let bookkeeping take down a run that otherwise worked.
-    await opts.journal?.append(record).catch((e) => console.error("[journal] append failed:", e));
+    await opts.journal?.append(record).catch((e) => console.error(colorError(`${tag("journal")} append failed:`), e));
   }
 }
 
@@ -248,10 +305,10 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
   record.reason = phase.reason;
 
   console.info(
-    `[tick] ${task.id} role=${phase.role} attempt=${log.attempts} — ${phase.reason}`,
+    `${tag("tick")} ${task.id} role=${roleTag(phase.role)} attempt=${log.attempts} — ${phase.reason}`,
   );
   if (phase.role === "documenter" || phase.role === "reviewer") {
-    console.info(`[tick] documenter signal: ${docs.reason}`);
+    console.info(`${tag("tick")} documenter signal: ${docs.reason}`);
   }
 
   const isExecutor = phase.role === "executor";
@@ -265,7 +322,13 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
   let base: Baseline | null = null;
   if (isExecutor) base = await captureBaseline(repoCwd, baseBranch, gateConfig!);
 
-  const prompt = renderPrompt(phase.role, task);
+  // Only the two scope-deciding roles have a policy for this, so don't pay
+  // for the ancestor lookups on any other role's tick.
+  const scope =
+    phase.role === "planner" || phase.role === "architect"
+      ? await siblingScopeFor(task, all, (id) => backlog.view(id))
+      : undefined;
+  const prompt = renderPrompt(phase.role, task, scope);
   record.promptChars = prompt.length;
 
   let result: { text: string; metrics?: AgentMetrics };
@@ -340,7 +403,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
   // prompt's format, the difference between the two IS the bug report.
   await opts.journal
     ?.transcript(task.id, phase.role, record.ts, prompt, result.text)
-    .catch((e) => console.error("[journal] transcript failed:", e));
+    .catch((e) => console.error(colorError(`${tag("journal")} transcript failed:`), e));
 
   // Non-executor roles write model-authored CONTENT into task fields.
   // Control flow stays deterministic; the content is versioned in git
@@ -349,6 +412,23 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
     case "planner": {
       const forcedSplit = task.labels.includes(NEEDS_SPLIT_LABEL);
       const parsed = parsePlannerOutput(result.text);
+      // The planner decided to split but its blocks didn't parse. Keep the
+      // verbatim proposal — it is usually good work with a bad header — and
+      // block this one task. Never rethrow: that reaches main.ts's crash
+      // counter and ends the whole unattended run.
+      if (parsed.kind === "unparseable") {
+        await backlog.comment(
+          task.id,
+          "planner",
+          `proposed a split in an unreadable format; no subtasks were created. Verbatim output:\n${parsed.text}`,
+        );
+        await backlog.setStatus(task.id, STATUS.blocked);
+        return {
+          done: false,
+          outcome: "split-unparseable",
+          note: `${task.id}: blocked — planner requested a split but no subtasks were parseable`,
+        };
+      }
       if (parsed.kind === "split") {
         // No architect contract yet: don't create children off this
         // proposal at all. Two siblings independently re-deriving a shared
@@ -376,14 +456,53 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
         // unapproved today. Each child still needs a human to move it to
         // `Ready for Work` before its own executor phase can start.
         const contract = task.implementationNotes ?? "";
+        // Chain each child on its immediate predecessor. Both planner
+        // prompts already ask for subtasks "in the order they should be
+        // implemented", and architect.md already names which single child
+        // creates each shared artifact — that intent was being generated and
+        // then discarded, leaving every sibling simultaneously ready and
+        // ordered only by ordinal. A linear chain is the strongest ordering
+        // derivable without a model, and `readiness.isBlocked` (the loop's
+        // only ordering mechanism, see resolvePhase) enforces it for free.
+        // Safe against stalling because a subtask self-finalizes to Done on
+        // green gates rather than waiting for a human. See D-008.
+        const created: string[] = [];
         for (const child of parsed.children) {
-          await backlog.createChild(task.id, child.title, project, {
+          const id = await backlog.createChild(task.id, child.title, project, {
             description: child.description,
             acceptanceCriteria: child.acceptanceCriteria,
             notes: contract,
+            dependsOn: created.length > 0 ? [created[created.length - 1]!] : [],
           });
+          created.push(id);
         }
         if (forcedSplit) await backlog.removeLabel(task.id, NEEDS_SPLIT_LABEL);
+
+        // Deterministic overlap check, right at the moment the tree changes
+        // shape — the earliest point the question is answerable and the
+        // cheapest point to act on it. No model: two tasks naming the same
+        // path in their own criteria will write that file twice. See D-009.
+        const freshAll = await backlog.list(undefined, project);
+        const inTree = freshAll.filter((t) => rootAncestorId(t.id, freshAll) === rootAncestorId(task.id, freshAll));
+        const collisions = findCollisions(await Promise.all(inTree.map((t) => backlog.view(t.id))), freshAll);
+        // Only real code collisions stop the loop. A manifest or an
+        // append-only doc claimed by several tasks is normal — it's reported
+        // in the comment for context, but blocking on it would stop nearly
+        // every split (nine tasks shared one `package.json` on `book`).
+        const blocking = collisions.filter((c) => c.blocking);
+        if (blocking.length > 0) {
+          await backlog.comment(task.id, "overlap", renderCollisions(collisions, inTree.length));
+          await backlog.addLabel(task.id, NEEDS_REPLAN_LABEL);
+          // Same deterministic-stop treatment as split-refused and
+          // alignment-drift: a guaranteed double-write earns a human look.
+          // Children stay unpromoted (D-002) so none of them can execute.
+          await backlog.setStatus(task.id, STATUS.blocked);
+          return {
+            done: false,
+            outcome: "split-overlapping",
+            note: `${task.id}: split into ${parsed.children.length} subtask(s) — ${blocking.length} blocking path collision(s), labelled ${NEEDS_REPLAN_LABEL}`,
+          };
+        }
         return { done: false, outcome: "split", note: `${task.id}: split into ${parsed.children.length} subtask(s)` };
       }
       if (forcedSplit) {

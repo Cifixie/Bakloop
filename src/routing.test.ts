@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { classifyDocsRelevance } from "./gates.js";
-import { NEEDS_SPLIT_LABEL, resolvePhase, type Signals } from "./phase.js";
-import { parseAlignmentOutput, parseCriteriaOutput, parseOwnerOutput } from "./spec.js";
-import { isContextOverflow, rootAncestorId } from "./tick.js";
+import { extractPaths, findCollisions } from "./overlap.js";
+import { NEEDS_REPLAN_LABEL, NEEDS_SPLIT_LABEL, resolvePhase, type Signals } from "./phase.js";
+import { parseAlignmentOutput, parseCriteriaOutput, parseOwnerOutput, parsePlannerOutput } from "./spec.js";
+import { isContextOverflow, rootAncestorId, siblingScopeFor } from "./tick.js";
 import { STATUS, type Comment, type Task, type TaskSummary } from "./types.js";
 
 /**
@@ -261,4 +262,198 @@ test("criteria output splits acceptance criteria from the definition of done", (
   const headerless = parseCriteriaOutput("1. First thing\n2. Second thing");
   assert.deepEqual(headerless.acceptanceCriteria, ["First thing", "Second thing"]);
   assert.deepEqual(headerless.definitionOfDone, []);
+});
+
+test("planner split headers survive a local model's numbering and bolding", () => {
+  // Verbatim shape from a real run that crashed the loop five times: the
+  // planner numbers each header, which the original literal `## Subtask:`
+  // matcher rejected wholesale.
+  const numbered = parsePlannerOutput(
+    [
+      "I'll split it.",
+      "",
+      "SPLIT",
+      "",
+      "## Subtask 1: CDK S3 bucket provisioning",
+      "Description: Add the bucket with versioning.",
+      "Acceptance criteria:",
+      "1. The stack creates an s3.Bucket",
+      "2. pnpm typecheck passes",
+      "",
+      "### **Subtask 2** — Schema updates",
+      "**Description:** Extend sourceSchema.",
+      "**Acceptance criteria:**",
+      "1. The Source type gains three fields",
+    ].join("\n"),
+  );
+  assert.equal(numbered.kind, "split");
+  assert(numbered.kind === "split");
+  assert.deepEqual(
+    numbered.children.map((c) => c.title),
+    ["CDK S3 bucket provisioning", "Schema updates"],
+  );
+  assert.equal(numbered.children[0]!.description, "Add the bucket with versioning.");
+  assert.deepEqual(numbered.children[0]!.acceptanceCriteria, [
+    "The stack creates an s3.Bucket",
+    "pnpm typecheck passes",
+  ]);
+  assert.deepEqual(numbered.children[1]!.acceptanceCriteria, ["The Source type gains three fields"]);
+
+  // No SPLIT marker: everything is a plan, untouched.
+  assert.deepEqual(parsePlannerOutput("Step 1. Edit foo.ts"), { kind: "plan", plan: "Step 1. Edit foo.ts" });
+
+  // A SPLIT with no readable blocks REPORTS rather than throws — a throw
+  // reaches main.ts's crash counter and ends the whole unattended run.
+  const broken = parsePlannerOutput("SPLIT\n\nJust some prose, no subtask headers at all.");
+  assert.equal(broken.kind, "unparseable");
+});
+
+test("siblingScopeFor names aunts and uncles, not a task's own children", async () => {
+  const summary = (id: string, parentTaskId: string | null): TaskSummary => ({
+    id,
+    title: `title of ${id}`,
+    status: STATUS.backlog,
+    priority: null,
+    assignees: [],
+    labels: [],
+    ordinal: 0,
+    acceptanceCriteriaCompleted: 0,
+    acceptanceCriteriaCount: 0,
+    isReady: true,
+    parentTaskId,
+  });
+
+  // The `book` tree that produced the duplication: TASK-1 split into 1.1-1.6,
+  // then 1.4 split again into 1.4.1-1.4.2. 1.4's architect wrote a contract
+  // re-specifying 1.1's and 1.2's work verbatim because it could not see them.
+  const all: TaskSummary[] = [
+    summary("TASK-1", null),
+    summary("TASK-1.1", "TASK-1"),
+    summary("TASK-1.2", "TASK-1"),
+    summary("TASK-1.4", "TASK-1"),
+    summary("TASK-1.4.1", "TASK-1.4"),
+    summary("TASK-1.4.2", "TASK-1.4"),
+  ];
+  const view = async (id: string) => task({ id, title: `title of ${id}`, description: `desc of ${id}` });
+
+  const scope = await siblingScopeFor(task({ id: "TASK-1.4", parentTaskId: "TASK-1" }), all, view);
+  assert(scope);
+  // Sees its siblings...
+  assert.deepEqual(
+    scope.owned.map((t) => t.id),
+    ["TASK-1.1", "TASK-1.2"],
+  );
+  // ...and the original ask it was carved out of.
+  assert.deepEqual(
+    scope.ancestors.map((a) => a.id),
+    ["TASK-1"],
+  );
+
+  // A leaf sees its cousins and its whole ancestor chain, root first.
+  const leaf = await siblingScopeFor(task({ id: "TASK-1.4.1", parentTaskId: "TASK-1.4" }), all, view);
+  assert(leaf);
+  assert.deepEqual(
+    leaf.owned.map((t) => t.id),
+    ["TASK-1.1", "TASK-1.2", "TASK-1.4.2"],
+  );
+  assert.deepEqual(
+    leaf.ancestors.map((a) => a.id),
+    ["TASK-1", "TASK-1.4"],
+  );
+
+  // A top-level task with no tree costs zero lookups and yields nothing.
+  let views = 0;
+  const counted = async (id: string) => {
+    views++;
+    return task({ id });
+  };
+  assert.equal(await siblingScopeFor(task({ id: "TASK-9" }), [summary("TASK-9", null)], counted), undefined);
+  assert.equal(views, 0);
+});
+
+test("findCollisions flags unrelated tasks claiming one file, not parent/child", () => {
+  const summary = (id: string, parentTaskId: string | null): TaskSummary => ({
+    id,
+    title: id,
+    status: STATUS.backlog,
+    priority: null,
+    assignees: [],
+    labels: [],
+    ordinal: 0,
+    acceptanceCriteriaCompleted: 0,
+    acceptanceCriteriaCount: 0,
+    isReady: true,
+    parentTaskId,
+  });
+  const claiming = (id: string, parentTaskId: string | null, ...paths: string[]) =>
+    task({
+      id,
+      parentTaskId,
+      description: null,
+      implementationPlan: null,
+      acceptanceCriteria: paths.map((p, i) => ({ index: i + 1, text: `Update ${p} to do the thing`, checked: false })),
+    });
+
+  const all = [
+    summary("TASK-1", null),
+    summary("TASK-1.1", "TASK-1"),
+    summary("TASK-1.4", "TASK-1"),
+    summary("TASK-1.4.1", "TASK-1.4"),
+  ];
+
+  // The `book` failure: a niece and an aunt both claiming the CDK stack.
+  const collisions = findCollisions(
+    [
+      claiming("TASK-1", null, "apps/infra/lib/bookmark-digest-stack.ts"),
+      claiming("TASK-1.1", "TASK-1", "apps/infra/lib/bookmark-digest-stack.ts"),
+      claiming("TASK-1.4", "TASK-1", "packages/schemas/src/index.ts"),
+      claiming("TASK-1.4.1", "TASK-1.4", "apps/infra/lib/bookmark-digest-stack.ts"),
+    ],
+    all,
+  );
+  assert.equal(collisions.length, 1);
+  assert.equal(collisions[0]!.path, "apps/infra/lib/bookmark-digest-stack.ts");
+  // TASK-1 is an ancestor of both, so it is not itself a colliding claimant.
+  assert.deepEqual(collisions[0]!.taskIds, ["TASK-1.1", "TASK-1.4.1"]);
+
+  // A container describing only its own child's file is normal, not a collision.
+  assert.deepEqual(
+    findCollisions(
+      [claiming("TASK-1", null, "src/a.ts"), claiming("TASK-1.1", "TASK-1", "src/a.ts")],
+      all,
+    ),
+    [],
+  );
+
+  // Distinct files across siblings: clean.
+  assert.deepEqual(
+    findCollisions(
+      [claiming("TASK-1.1", "TASK-1", "src/a.ts"), claiming("TASK-1.4", "TASK-1", "src/b.ts")],
+      all,
+    ),
+    [],
+  );
+});
+
+test("extractPaths takes repo paths and leaves prose and URLs alone", () => {
+  assert.deepEqual([...extractPaths("Edit `apps/infra/lib/dynamo.ts` and packages/schemas/src/index.ts.")], [
+    "apps/infra/lib/dynamo.ts",
+    "packages/schemas/src/index.ts",
+  ]);
+  // Needs a directory segment: a bare filename in prose is not a claim.
+  assert.deepEqual([...extractPaths("Run pnpm typecheck, then check handler.ts")], []);
+  // A URL's host/path is shaped like a repo path but never is one.
+  assert.deepEqual([...extractPaths("See https://example.com/docs/guide.md for details")], []);
+  assert.deepEqual([...extractPaths(null)], []);
+});
+
+test("a container with a known overlap stops instead of walking on to review", () => {
+  const container = gatesGreen({
+    subtasks: [{ id: "TASK-1.1", title: "child" }],
+    finalSummary: null,
+    labels: [NEEDS_REPLAN_LABEL],
+  });
+  assert.equal(resolvePhase(container, 0, NO_DOCS), null);
+  // Without the label the same container proceeds to its alignment check.
+  assert.equal(resolvePhase({ ...container, labels: [] }, 0, NO_DOCS)?.role, "architect");
 });

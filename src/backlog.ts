@@ -134,7 +134,18 @@ export class Backlog {
     parentId: string,
     title: string,
     project: string,
-    opts: { description?: string; acceptanceCriteria?: string[]; notes?: string } = {},
+    opts: {
+      description?: string;
+      acceptanceCriteria?: string[];
+      notes?: string;
+      /**
+       * Task ids this child must wait for. `readiness.isBlocked` is already
+       * the loop's ONLY ordering mechanism (`resolvePhase`), so setting this
+       * is what makes a planner's stated implementation order actually
+       * enforced instead of advisory — see D-008.
+       */
+      dependsOn?: string[];
+    } = {},
   ): Promise<string> {
     const args = ["task", "create", title, "--parent", parentId, "--project", project, "--plain"];
     if (opts.description) args.push("--description", opts.description);
@@ -144,6 +155,7 @@ export class Backlog {
     // live lookup of the parent — every sibling starts from the same shared
     // shape without any new context-fetching machinery.
     if (opts.notes) args.push("--notes", opts.notes);
+    if (opts.dependsOn?.length) args.push("--depends-on", opts.dependsOn.join(","));
     const out = await this.cli(args);
     const id = out.match(/^Task (\S+) -/m)?.[1];
     if (!id) throw new Error(`Could not parse new subtask id from create output:\n${out}`);

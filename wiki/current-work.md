@@ -5,13 +5,20 @@ History lives in git.
 
 ---
 
-**Status:** the planner-split flow now routes through an architect-written interface
-contract before children are created, and through a second architect alignment pass
-before a container can reach `reviewer`. Implemented and covered by `routing.test.ts`
-(container → architect → reviewer sequencing, the two marker types not being confused,
-`parseAlignmentOutput`'s default-to-`drift`). **Not yet run against a real local model
-end-to-end** — nobody has watched an actual split produce a contract, children inherit
-it, and the alignment pass catch a real disagreement.
+**Status:** the overlap-in-subtasks problem has three distinct causes; two are now fixed
+deterministically and one is built but **still never observed running**.
+
+| Cause | Mechanism | State |
+|---|---|---|
+| Siblings independently invent the same shared artifact | architect contract seeded into every child (D-007) | built, **never once executed** |
+| No ordering — last writer clobbers | children dependency-chained (D-008) | built + tested |
+| A nested split can't see what its aunts/uncles own | `SiblingScope` for planner/architect (D-008) | built + tested |
+
+The reason D-007 has never run: the planner's split output crashed the loop on a header
+regex (`## Subtask 1:` vs the literal `## Subtask:`), five times, before the contract gate
+was ever reached — see the header-format entry in `wiki/gotchas.md`. Fixed, with a
+regression test replaying the real output. **Every planner iteration so far has been
+judged on a tree the current code never produced.**
 
 How it works: `tick.ts`'s `case "planner"` won't create children from a `SPLIT` until
 `hasArchitectContract(task)` (`phase.ts`) is true; until then the task gets
@@ -48,63 +55,32 @@ real task ever has) instructing the model to preserve substantive content rather
 summarize it. Not yet run against a real draft with a real local model — only
 typechecked.
 
+**Decision records are now the agent's to write and keep current** (CLAUDE.md, Write
+access). D-007 is recorded as `Accepted`; D-002 and D-004 have been rewritten to match the
+code, each carrying an `Amended` note explaining what changed and why. Nothing in
+`wiki/decisions.md` is waiting on a countersignature.
+
 **Needs your sign-off:**
-1. **D-007, drafted below** — architect contract required before a split creates
-   children; second alignment pass required before a container reaches `reviewer`.
-2. `wiki/decisions.md` D-002's text still describes the retired `approved` label, not
-   today's `Ready for Work` status (see CLAUDE.md's hard constraints for current
-   behavior). Needs a human rewrite — not mine to edit.
-3. `wiki/decisions.md` D-004's text still says branch-sharing covers "exactly one level
-   of nesting." `rootAncestorId` (`src/tick.ts`) now walks to the root ancestor and this
-   is tested (`routing.test.ts`). Needs a human rewrite — not mine to edit.
-4. Parked, not urgent: a prior-session proposal to capture a plan's base commit and check
+
+1. Parked, not urgent: a prior-session proposal to capture a plan's base commit and check
    it before executing. Untouched since it was raised; pick it up from git history if
    it's still wanted.
-5. `src/phase.ts` and `src/spec.ts` reference the pending decision as `D-00X` in code
-   comments — once D-007 above is accepted (or renumbered), those two comments need the
-   real number.
 
-**D-007 draft, for `wiki/decisions.md`:**
+**Next action — stop adding mechanism, run it.** In order:
 
-> ## D-007 — A split requires an architect-written interface contract before children exist; a container requires a second alignment pass before review
->
-> **Date:** 2026-09-08
-> **Status:** Proposed
->
-> **Context:** The planner splits a task into subtasks with zero visibility into any
-> sibling's plan (context is rationed per role/per task — see the rationale in
-> `src/prompts.ts`). Observed in practice on the `book` project: one task's subtree
-> produced seven incompatible reimplementations of the same shared accessor function
-> and four separate, conflicting CDK bucket definitions, because nothing forced
-> agreement on the shared interface before the subtasks existed independently.
->
-> **Decision:** A planner's split proposal is provisional until `architect` has written
-> an interface contract for the parent task (`hasArchitectContract`, `phase.ts`) — only
-> then are children actually created, each seeded with that contract in its own
-> `implementationNotes`. Once every child is Done, a second, distinctly-marked architect
-> pass (`hasAlignmentCheck`) must confirm the finished siblings still agree with the
-> contract before the container can reach `reviewer`; on `DRIFT` the container is
-> blocked for a human, not merely annotated.
->
-> **Consequences:** Every split costs at least two extra architect ticks (one before,
-> one after) beyond today's one-shot planner split — acceptable because model time is
-> free and both failure modes this catches (siblings reinventing a shared interface
-> differently; siblings drifting from an agreed shape by the time they're all done) are
-> silent otherwise. The alignment check's verdict is a single required token
-> (`ALIGNED`/`DRIFT`) parsed the same way as `SPLIT`/`TYPE`, not a prose-parsed
-> model summary — kept distinct from D-001's gate verdicts, which this doesn't touch;
-> `tsc`/`biome`/`vitest` remain the only pass/fail signal for the executor and reviewer.
-> A false `DRIFT` costs one human look; a missed one costs exactly what already happened
-> on `book`'s `TASK-1.4` subtree.
+1. **Reset the `book` task tree** (it predates D-007 and has no contracts), keeping
+   `state/book/journal.db` for the 3.5-ticks-per-task baseline.
+2. **Re-plan a task that has to split** and read the resulting tree by hand against
+   `raw/notes.md`'s list of overlap symptoms: is any shared artifact specified twice? Does
+   any child re-state a sibling's scope? This is the observation that has been skipped
+   three times.
+3. **Then** the original goal: exercise the _executor_ path against a real local model
+   (`npm run report book` for ticks/completed once there's execution data).
 
-**Next action:**
-1. Get sign-off on D-007 above (or redirect it) before running the split-then-execute
-   path against a real local model.
-2. Once signed off: wipe the `book` project's current task tree ("take our learnings and
-   start fresh"), keeping `state/book/journal.db` (baseline: 3.5 ticks per completed
-   task, worth comparing the new split behavior against). Re-run planning from the
-   original tickets, watch a task that has to split, and confirm the contract gets
-   written, copied into every child, and checked for real drift at alignment time.
-3. Only after that: resume the original goal of this session — testing the *executor*
-   path for the first time against a real local model (`npm run report book` reads
-   ticks/completed once there's real execution data).
+**Overlap is now detected, not eyeballed** (D-009). `npm run overlap <project>` reports
+every file claimed by two unrelated tasks in a tree; the same check runs automatically
+right after a split and blocks the container on a real collision. Verified against the
+current pre-reset `book` tree, where it independently reproduced the hand analysis in
+`raw/notes.md` — 7 blocking collisions, led by `apps/infra/lib/source-content.ts` claimed
+by five separate tasks. **Run it on the old tree once before resetting if you want the
+before/after on record;** after the reset it becomes the pass/fail for step 2 above.

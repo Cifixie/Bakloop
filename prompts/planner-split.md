@@ -12,6 +12,8 @@ Acceptance criteria:
 1. <concrete, testable criterion>
 2. <concrete, testable criterion>
 
+If the context below lists work already owned by other tasks in this same breakdown, do not plan or split that work again — it belongs to those tasks. Your scope is only what is left over.
+
 Do not write an implementation plan, and do not explain your reasoning before or after the blocks. If you genuinely cannot find a seam, say so in one sentence and output no `SPLIT` line — the task will be handed to a human rather than retried.
 
 {{context}}
