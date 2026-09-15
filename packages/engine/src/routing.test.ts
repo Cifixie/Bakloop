@@ -394,6 +394,42 @@ test("planner split headers survive a local model's numbering and bolding", () =
   assert.equal(broken.kind, "unparseable");
 });
 
+test("planner split is detected even without the literal SPLIT line (TASK-1, D-015 promotion)", () => {
+  // Real run: the planner announced its intent in prose and went straight
+  // into well-formed `## Subtask:` blocks without ever emitting the bare
+  // `SPLIT` marker. The old parser fell through to "plan", saving the whole
+  // reply — prose plus subtask blocks — verbatim into Implementation Plan
+  // with no children created. See wiki/gotchas.md.
+  const noMarker = parsePlannerOutput(
+    [
+      "This task is substantial. I will split it into two independently",
+      "implementable and verifiable subtasks.",
+      "",
+      "## Subtask: CDK S3 bucket + IAM grants",
+      "Description: Create the new S3 bucket.",
+      "Acceptance criteria:",
+      "1. Bucket has versioning enabled",
+      "",
+      "## Subtask: ingest-url writes raw + extracted to S3",
+      "Description: Modify the handler to upload to S3.",
+      "Acceptance criteria:",
+      "1. DynamoDB item has rawS3Key set",
+    ].join("\n"),
+  );
+  assert.equal(noMarker.kind, "split");
+  assert(noMarker.kind === "split");
+  assert.deepEqual(
+    noMarker.children.map((c) => c.title),
+    ["CDK S3 bucket + IAM grants", "ingest-url writes raw + extracted to S3"],
+  );
+
+  // A bare mention of "subtask" in prose, with no actual header, is still a plan.
+  assert.deepEqual(
+    parsePlannerOutput("I considered splitting this into subtasks but it's small enough as one plan."),
+    { kind: "plan", plan: "I considered splitting this into subtasks but it's small enough as one plan." },
+  );
+});
+
 test("siblingScopeFor names aunts and uncles, not a task's own children", async () => {
   const summary = (id: string, parentTaskId: string | null): TaskSummary => ({
     id,

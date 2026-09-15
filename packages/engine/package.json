@@ -1,0 +1,31 @@
+{
+  "name": "engine",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "setup": "tsx src/setup.ts",
+    "register": "tsx src/register-project.ts",
+    "new-draft": "tsx src/create-draft.ts",
+    "promote-draft": "tsx src/promote-draft.ts",
+    "report": "tsx src/report.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/*.test.ts",
+    "overlap": "tsx src/overlap.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.85.1",
+    "@earendil-works/pi-ai": "^0.85.1",
+    "typebox": "^1.3.28"
+  }
+}

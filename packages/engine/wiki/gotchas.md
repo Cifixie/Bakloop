@@ -169,3 +169,43 @@ task has a description/AC/DoD and the front of the chain has a plan; the rest pl
 just-in-time during real execution, exactly as before D-015. Nested splits (a subtask
 itself splitting again) are now exercised for real by this loop, since tree membership is
 recomputed via `rootAncestorId` after every tick with no special-casing for depth.
+
+---
+
+## A promoted draft's task had no `project` field, so the loop never saw it
+
+**Symptom:** `promote-draft.ts` runs, prints `Promoted DRAFT-1 -> TASK-1, project="book"`,
+the plan-mode loop even runs against it — but the *main* loop (`npm start`) afterward logs
+`no-ready-tasks` forever, and `backlog task list --project book` shows nothing even though
+`backlog task list` (no filter) shows the task right there in `Backlog`.
+**Cause:** `backlog draft promote` has no `--project` flag — it just converts the draft
+file to a task file, carrying over nothing project-related. `promote-draft.ts` only ever
+*removed* the temporary `project:<key>` label (used to route the draft, since drafts have
+no structured project field) and never set the real `--project` field on the resulting
+task. `Backlog.list(status, project)` filters via `backlog task list --project <key>`, so
+a task with no project field is invisible to it forever — the exact same trap already
+documented for `Backlog.createChild` above, hit via a second, separate code path.
+**Fix:** `promote-draft.ts` now runs `backlog task edit <id> --project <project>` right
+after promotion, before removing the label. If you find another stray promoted task with
+this problem, `backlog task edit <id> --project <key>` fixes it in place — no need to
+re-promote.
+
+---
+
+## A well-formed split with no literal `SPLIT` line parsed as a plan, subtask blocks and all
+
+**Symptom:** During TASK-1's real D-015 promotion run, the planner announced its intent in
+prose ("I will split this into two independently implementable subtasks...") and went
+straight into well-formed `## Subtask:` blocks — but never emitted the bare `SPLIT` marker
+line the prompt asks for. `parsePlannerOutput` found no `SPLIT` line, fell through to
+`{ kind: "plan" }`, and saved the *entire* reply — lead-in prose plus both subtask blocks —
+verbatim into Implementation Plan. No children were created; TASK-1 looked "planned" but
+was actually an unsplit container with someone else's subtask spec buried in its plan text.
+**Cause:** `parsePlannerOutput` (`src/spec.ts`) treated the literal `SPLIT` marker as the
+only signal that a split was intended, unlike the header-tolerance fix above (which assumes
+the marker is present and only relaxes the header format after it).
+**Fix:** If no `SPLIT` line is found, `parsePlannerOutput` now also checks whether the
+*first* line matching `SUBTASK_HEADER` starts the body — if so, it parses from there
+instead of falling through to "plan". A bare mention of the word "subtask" in prose with no
+actual header still parses as a plan, unchanged. See `src/routing.test.ts`'s
+"planner split is detected even without the literal SPLIT line" test.
