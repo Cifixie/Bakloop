@@ -1,10 +1,9 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { error as colorError, warn } from "./colors.js";
-import { bakloopHome, backlogDir, loadProjects, saveProjects } from "./config.js";
+import { bakloopHome, loadProjects, saveProjects } from "./config.js";
 
 const run = promisify(execFile);
 
@@ -43,12 +42,7 @@ async function cloneRemote(source: string, dest: string): Promise<string> {
 /**
  * `tsx src/register-project.ts <key> [path|url] [--autonomous]` — maps a
  * project lane to a repo in the shared registry, records the base branch
- * every task branch forks from and is diffed against, and best-effort
- * mirrors the key into backlog.md's own `projects` list (which the tool
- * itself requires you to edit directly; there is no `backlog config set`
- * for it). A fresh store's config.yml has no `projects:` line at all —
- * backlog.md omits it rather than writing `projects: []` — so this appends
- * one rather than assuming it exists.
+ * every task branch forks from and is diffed against.
  *
  * Two registration shapes (D-012):
  * - An existing local directory registers exactly as before: supervised —
@@ -110,35 +104,6 @@ async function main() {
   projects[key] = { path: repoPath, baseBranch, ...(autonomous ? { autonomous } : {}) };
   await saveProjects(projects);
   console.info(`Registered "${key}" -> ${repoPath} (base branch: ${baseBranch}${autonomous ? ", autonomous" : ""})`);
-
-  const configPath = join(backlogDir(), "config.yml");
-  try {
-    const raw = await readFile(configPath, "utf-8");
-    const match = raw.match(/^projects:\s*\[(.*)\]\s*$/m);
-    const inner = match?.[1];
-    if (inner === undefined) {
-      const newLine = `projects: ["${key}"]`;
-      await writeFile(configPath, `${raw.replace(/\n$/, "")}\n${newLine}\n`, "utf-8");
-      console.info(`Added "${key}" to a new "projects:" line in ${configPath}`);
-      return;
-    }
-    const existing = inner
-      .split(",")
-      .map((s) => s.trim().replace(/^"|"$/g, ""))
-      .filter(Boolean);
-    if (existing.some((p) => p.toLowerCase() === key.toLowerCase())) return;
-    existing.push(key);
-    const updatedLine = `projects: [${existing.map((p) => `"${p}"`).join(", ")}]`;
-    await writeFile(configPath, raw.replace(/^projects:\s*\[.*\]\s*$/m, updatedLine), "utf-8");
-    console.info(`Added "${key}" to ${configPath}`);
-  } catch {
-    console.warn(
-      warn(
-        `No backlog config found at ${configPath}. Run "npm run setup" first, ` +
-          `then add "${key}" to its projects list.`,
-      ),
-    );
-  }
 }
 
 main().catch((err) => {

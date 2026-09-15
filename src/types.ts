@@ -1,8 +1,7 @@
 /**
- * Mirrors Backlog.md `--json` output, schemaVersion 1.
- * Verified against backlog.md v1.51.0. Only fields the orchestrator uses.
+ * Core types for bakloop's task system. The orchestrator loads tasks from the
+ * SQLite-backed store (`Backlog`) — types here describe what the engine needs.
  */
-
 export interface AcceptanceCriterion {
   index: number;
   text: string;
@@ -73,23 +72,9 @@ export interface Task extends TaskSummary {
   subtasks: { id: string; title: string }[];
 }
 
-export interface TaskListResponse {
-  schemaVersion: 1;
-  kind: "task-list";
-  tasks: TaskSummary[];
-}
 
-export interface TaskViewResponse {
-  schemaVersion: 1;
-  kind: "task-view";
-  task: Task;
-}
 
-/**
- * Backlog.md's default task types. Mirrors `taskTypes` in the store's
- * config.yml — an owner-proposed type that isn't on this list is dropped
- * rather than passed to the CLI, which would reject it and kill the tick.
- */
+
 export const TASK_TYPES = [
   "bug",
   "feature",

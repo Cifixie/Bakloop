@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { runAgent } from "./agent.js";
 import { Backlog } from "./backlog.js";
 import { error as colorError, tag, warn as colorWarn } from "./colors.js";
-import { backlogDir, loadProjects, resolveProjectKey, stateDir } from "./config.js";
+import { tasksDbPath, loadProjects, resolveProjectKey, stateDir } from "./config.js";
 import { createJournal } from "./journal.js";
 import { createLogStore } from "./log.js";
 import { readBatteryState, startCaffeinate } from "./power.js";
@@ -57,8 +57,7 @@ async function main() {
       );
     });
   }
-
-  const backlog = new Backlog(backlogDir());
+  const backlog = new Backlog(tasksDbPath());
   const { loadLog, saveLog } = createLogStore(stateDir(project));
   const gateConfigPath = join(stateDir(project), "gates.json");
   // Records every tick to `state/<project>/journal.db` for `npm run report`.

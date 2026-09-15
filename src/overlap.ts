@@ -1,5 +1,5 @@
 import { error as colorError, tag } from "./colors.js";
-import { backlogDir, loadProjects } from "./config.js";
+import { tasksDbPath, loadProjects } from "./config.js";
 import { Backlog } from "./backlog.js";
 import type { Task, TaskSummary } from "./types.js";
 
@@ -200,7 +200,7 @@ async function main() {
     return;
   }
 
-  const backlog = new Backlog(backlogDir());
+  const backlog = new Backlog(tasksDbPath());
   const all = await backlog.list(undefined, project);
   if (all.length === 0) {
     console.info(`No tasks for "${project}".`);

@@ -156,7 +156,7 @@ export function rootAncestorId(taskId: string, all: TaskSummary[]): string {
 export async function siblingScopeFor(
   task: Task,
   all: TaskSummary[],
-  view: (id: string) => Promise<Task>,
+  view: (id: string) => Task | Promise<Task>,
 ): Promise<SiblingScope | undefined> {
   const rootId = rootAncestorId(task.id, all);
   // A top-level task with no tree around it has no scope to conflict with,

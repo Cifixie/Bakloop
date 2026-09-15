@@ -1,111 +1,75 @@
-import { execFile } from "node:child_process";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { runAgent } from "./agent.js";
 import { Backlog } from "./backlog.js";
 import { git } from "./branch.js";
-import { error as colorError, tag, warn as colorWarn } from "./colors.js";
-import { backlogDir, loadProjects, stateDir } from "./config.js";
+import { error as colorError, tag } from "./colors.js";
+import { tasksDbPath, loadProjects, stateDir } from "./config.js";
 import { createJournal } from "./journal.js";
 import { createLogStore } from "./log.js";
-import { renderPrompt, type SiblingScope } from "./prompts.js";
+import { renderPrompt } from "./prompts.js";
 import { rootAncestorId, tick } from "./tick.js";
-import type { Role, Task } from "./types.js";
-
-const run = promisify(execFile);
 
 /** Safety cap on the plan-mode loop below — real progress always stops well before this. */
 const MAX_PLAN_TICKS = 40;
 
 /**
- * `tsx src/promote-draft.ts [draft-id] [project]` — the only path from a
- * raw draft (`src/create-draft.ts`) to a real, fully spec'd task tree.
+ * `tsx src/promote-draft.ts [project]` — the only path from a raw draft
+ * (`src/create-draft.ts`) to a real, fully spec'd task tree.
  *
- * Promotes the draft immediately, then drives the resulting task through
- * bakloop's own plan-mode roles (owner -> criteria -> researcher/architect
- * -> planner, including any split) exactly as the main tick loop would,
- * scoped to just this task's tree and never advancing into execution. The
- * verbatim draft text is injected into every one of those ticks as extra
- * context, not just used once to write a description — so a split decision,
- * in particular, is made with the human's full original ask in hand, not a
- * summary of a summary. By the time this returns, every task in the tree is
- * either planned or (if split) has spec'd children — ready for a human to
- * read in Backlog.md before the main loop ever touches it.
- *
- * `tsx src/promote-draft.ts --all` loops this over every existing draft in
- * one run.
+ * Promotes all drafts for the project immediately, then drives each resulting
+ * task through bakloop's own plan-mode roles (owner -> criteria ->
+ * researcher/architect -> planner, including any split) exactly as the main
+ * tick loop would, scoped to just each task's tree and never advancing into
+ * execution. The verbatim draft text is injected into every one of those
+ * ticks as extra context, not just used once to write a description — so a
+ * split decision, in particular, is made with the human's full original ask
+ * in hand, not a summary of a summary. By the time this returns, every task
+ * in the tree is either planned or (if split) has spec'd children — ready
+ * for a human to review before the main loop ever touches it.
  */
 async function main() {
-  const arg = process.argv[2];
-  if (!arg) {
-    console.info(await cli(["draft", "list", "--plain"]));
-    console.info(
-      '\nRe-run as "tsx src/promote-draft.ts <draft-id>" or "tsx src/promote-draft.ts --all".',
-    );
+  const project = process.argv[2];
+  if (!project) {
+    console.error(colorError("usage: tsx src/promote-draft.ts <project>"));
+    process.exitCode = 1;
     return;
   }
-
-  if (arg === "--all") {
-    const draftIds = await listDraftIds();
-    if (draftIds.length === 0) {
-      console.info("No drafts to promote.");
-      return;
-    }
-    for (const [i, draftId] of draftIds.entries()) {
-      console.info(`\n=== [${i + 1}/${draftIds.length}] ${draftId} ===`);
-      await promoteOne(draftId, undefined);
-    }
-    return;
-  }
-
-  await promoteOne(arg, process.argv[3]);
-}
-
-async function listDraftIds(): Promise<string[]> {
-  const out = await cli(["draft", "list", "--plain"]);
-  return [...out.matchAll(/^\s*(DRAFT-\S+)\s+-/gm)].map((m) => m[1]!);
-}
-
-async function promoteOne(draftId: string, projectArg: string | undefined): Promise<void> {
-  const draft = parseDraftView(await cli(["draft", "view", draftId, "--plain"]));
-  if (!draft.title) throw new Error(`Could not read draft "${draftId}".`);
 
   const projects = await loadProjects();
-  const labelProject = draft.labels
-    .find((l) => l.startsWith("project:"))
-    ?.slice("project:".length);
-
-  const project = projectArg ?? labelProject;
-  if (!project || !projects[project]) {
-    throw new Error(
-      project
-        ? `"${project}" is not registered. Run "tsx src/register-project.ts <key> [path]" first.`
-        : `No project given and draft has no "project:" label. Run as "tsx src/promote-draft.ts ${draftId} <project>".`,
-    );
+  if (!projects[project]) {
+    console.error(colorError(`"${project}" is not registered. Run "tsx src/register-project.ts <key> [path]" first.`));
+    process.exitCode = 1;
+    return;
   }
+
+  const backlog = new Backlog(tasksDbPath());
   const entry = projects[project]!;
 
-  const backlog = new Backlog(backlogDir());
-  const before = new Set((await backlog.list()).map((t) => t.id));
-  await cli(["draft", "promote", draftId]);
-  const created = (await backlog.list()).find((t) => !before.has(t.id));
-  if (!created) throw new Error("Could not determine the new task id after promotion.");
+  const drafts = backlog.list(project, "Draft");
+  if (drafts.length === 0) {
+    console.info(`No drafts for "${project}".`);
+    return;
+  }
 
-  // Force the owner phase to run next, on the real task — the verbatim
-  // draft reaches it (and every later planning role) as extra context via
-  // renderWithDraft below, not by pre-seeding this field.
-  await backlog.setDescription(created.id, "");
-  if (labelProject) await cli(["task", "edit", created.id, "--remove-label", `project:${labelProject}`]);
+  for (const [i, draft] of drafts.entries()) {
+    console.info(`\n=== [${i + 1}/${drafts.length}] ${draft.id} ===`);
+    await promoteOne(draft.id, project, backlog, entry);
+  }
+}
 
-  console.info(`Promoted ${draftId} -> ${created.id}, project="${project}". Running the plan-mode loop...`);
+async function promoteOne(
+  draftId: string,
+  project: string,
+  backlog: Backlog,
+  entry: { path: string; baseBranch: string },
+): Promise<void> {
+  const task = backlog.view(draftId);
+  if (task.status !== "Draft") throw new Error(`Task "${draftId}" is not a draft (status: ${task.status}).`);
 
-  const draftText = draft.description;
-  const renderWithDraft = (role: Role, task: Task, scope?: SiblingScope): string => {
-    const base = renderPrompt(role, task, scope);
-    return draftText
-      ? `${base}\n\n## Original request (verbatim — do not summarize further)\n\n${draftText}`
-      : base;
-  };
+  await backlog.setDescription(draftId, "");
+  await backlog.setStatus(draftId, "Backlog");
+
+  console.info(`Promoted ${draftId}, project="${project}". Running the plan-mode loop...`);
 
   const { loadLog, saveLog } = createLogStore(stateDir(project));
   const journal = createJournal(stateDir(project), {
@@ -124,16 +88,21 @@ async function promoteOne(draftId: string, projectArg: string | undefined): Prom
         runAgent,
         loadLog,
         saveLog,
-        renderPrompt: renderWithDraft,
+        renderPrompt: (role, task) => {
+          const base = renderPrompt(role, task);
+          return task.description
+            ? `${base}\n\n## Original request (verbatim — do not summarize further)\n\n${task.description}`
+            : base;
+        },
         journal,
-        restrictToTree: created.id,
+        restrictToTree: draftId,
       });
       console.info(`${tag("plan")} ${result.note}`);
       if (result.done) break;
       if (i === MAX_PLAN_TICKS - 1) {
         console.warn(
-          colorWarn(
-            `${tag("plan")} hit the ${MAX_PLAN_TICKS}-tick safety cap without finishing — check ${created.id}'s tree by hand.`,
+          colorError(
+            `${tag("plan")} hit the ${MAX_PLAN_TICKS}-tick safety cap without finishing — check ${draftId}'s tree by hand.`,
           ),
         );
       }
@@ -144,16 +113,16 @@ async function promoteOne(draftId: string, projectArg: string | undefined): Prom
     await git(entry.path, ["checkout", entry.baseBranch]).catch(() => {});
   }
 
-  await printTreeSummary(backlog, project, created.id);
+  await printTreeSummary(backlog, project, draftId);
 }
 
 async function printTreeSummary(backlog: Backlog, project: string, rootId: string): Promise<void> {
-  const all = await backlog.list(undefined, project);
+  const all = backlog.list(undefined, project);
   const inTree = all.filter((t) => rootAncestorId(t.id, all) === rootId).sort((a, b) => a.ordinal - b.ordinal);
 
   console.info(`\n--- ${rootId}'s tree, ready for review ---`);
   for (const t of inTree) {
-    const full = await backlog.view(t.id);
+    const full = backlog.view(t.id);
     const spec =
       full.subtasks.length > 0
         ? `split into ${full.subtasks.length} subtask(s)`
@@ -162,22 +131,6 @@ async function printTreeSummary(backlog: Backlog, project: string, rootId: strin
           : "NOT planned";
     console.info(`  ${t.id} [${t.status}] ${spec}${t.labels.length ? ` (${t.labels.join(", ")})` : ""} — ${t.title}`);
   }
-}
-
-async function cli(args: string[]): Promise<string> {
-  const { stdout } = await run("backlog", args, { cwd: backlogDir(), maxBuffer: 32 * 1024 * 1024 });
-  return stdout;
-}
-
-function parseDraftView(text: string): { title: string; description: string; labels: string[] } {
-  const title = text.match(/^Task \S+ - (.+)$/m)?.[1]?.trim() ?? "";
-  const description =
-    text.match(/^Description:\n-+\n([\s\S]*?)\n\nAcceptance Criteria:/m)?.[1]?.trim() ?? "";
-  const labels = (text.match(/^Labels:\s*(.*)$/m)?.[1] ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return { title, description, labels };
 }
 
 main().catch((err) => {
