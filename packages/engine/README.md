@@ -20,7 +20,7 @@ Backlog → owner → criteria → architect/researcher (optional) → planner
 `critic` can push back: `CHANGES` sends the task back to `executor` with specific
 feedback (capped, then blocks for a human); `RESPEC` clears the plan and resets the
 task to `ToDo`, which routes it back through `planner` before it's eligible for
-execution again. See D-013 in `wiki/decisions.md`.
+execution again. See D-013 in `../wiki/decisions.md`.
 
 | Role | Writes | Tools |
 |---|---|---|
@@ -67,7 +67,7 @@ each seeded with that contract in its own `implementationNotes`. Once every chil
 `architect` runs a second time (a distinctly-marked pass, `hasAlignmentCheck`) to check the
 finished siblings against that contract before the container can reach `reviewer`; on
 `DRIFT` the container is blocked for a human rather than reaching review looking clean. See
-D-007 in `wiki/decisions.md`.
+`../wiki/decisions.md`.
 
 **`documenter` is triggered by the diff, not by the calendar.** After the gates go green,
 `src/gates.ts` checks whether the branch actually touched a documentation file, a

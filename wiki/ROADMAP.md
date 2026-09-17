@@ -1,6 +1,6 @@
 # ROADMAP
 
-Future-facing ideas, not yet decided. Unlike `wiki/decisions.md`, nothing here is
+Future-facing ideas, not yet decided. Unlike `decisions.md`, nothing here is
 `Accepted` — an entry here is a candidate shape for a `Proposed` or `Accepted` decision,
 not one itself. When an idea below actually gets built, write it up properly in
 `decisions.md` and either delete or shrink its entry here to a one-line pointer.

@@ -37,7 +37,7 @@ const PATH_TOKEN = /(?:@?[\w.-]+\/)+[\w.-]+\.[A-Za-z]\w{0,4}/g;
  * clobber this check exists to catch, so they are reported and never blocked.
  *
  * Discovered by running the check against `book`'s real tree, where
- * `apps/infra/package.json` was claimed by nine tasks and `wiki/gotchas.md`
+ * `apps/infra/package.json` was claimed by nine tasks and `../wiki/gotchas.md`
  * by three — burying the two collisions that actually mattered.
  */
 const SHARED_BY_CONVENTION = new Set([

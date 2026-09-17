@@ -7,11 +7,11 @@ History lives in git.
 
 **Bug fixed this session: promoted drafts had no `project` field, invisible to the main
 loop.** D-015 (draft promotion running the full plan-mode loop, shipped previous session —
-see `wiki/decisions.md`) got its first real end-to-end test this session: 3 drafts
+see `decisions.md`) got its first real end-to-end test this session: 3 drafts
 promoted into TASK-1/2/3 against the `book` project. The plan-mode loop ran fine against
 each, but the *main* `npm start` loop then logged `no-ready-tasks` for 3 straight ticks —
 `backlog task list --project book` returned nothing even though the tasks existed in
-`Backlog`. Cause and fix are in `wiki/gotchas.md`'s newest entry; short version:
+`Backlog`. Cause and fix are in `gotchas.md`'s newest entry; short version:
 `promote-draft.ts` removed the temporary `project:<key>` label but never set the real
 `--project` field on the promoted task, so `Backlog.list` filtered it out forever. Fixed,
 typechecked, all 36 tests still pass. The 3 stray tasks from this session were patched by

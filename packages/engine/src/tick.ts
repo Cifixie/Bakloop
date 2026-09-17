@@ -122,7 +122,7 @@ function containerIds(all: TaskSummary[]): Set<string> {
 /**
  * Walks `parentTaskId` all the way up, not just one level, so a subtask of a
  * subtask (a nested split — see D-004 and the nested-splits entry in
- * wiki/gotchas.md) still lands on its top-level ancestor's branch instead of
+ * ../wiki/gotchas.md) still lands on its top-level ancestor's branch instead of
  * forking a new one at whatever level it was split. `all` must be the full
  * project-scoped listing so every ancestor in the chain is resolvable.
  */
@@ -520,7 +520,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
         // proposal at all. Two siblings independently re-deriving a shared
         // interface (the same file, incompatible signatures) is exactly the
         // failure this gate exists to prevent — see hasArchitectContract and
-        // the split-alignment decision proposal in wiki/current-work.md.
+        // the split-alignment decision in ../wiki/decisions.md.
         // The proposal itself is discarded, not persisted: it's provisional,
         // and the planner re-decides the split next tick with the contract
         // in hand, informed by constraints it didn't have the first time.
@@ -626,8 +626,8 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
       if (isAlignmentCheck) {
         const { drift } = parseAlignmentOutput(result.text);
         if (drift) {
-          // Block-on-drift was the deliberate choice (see decision proposal
-          // in wiki/current-work.md): a human resolves the mismatch before
+          // Block-on-drift was the deliberate choice (see decision in
+          // ../wiki/decisions.md): a human resolves the mismatch before
           // this container can reach reviewer, rather than relying on them
           // to notice it inside a PR summary.
           await backlog.setStatus(task.id, STATUS.blocked);
@@ -847,7 +847,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
  * "Gates were green before rebase" says nothing about after — rebasing
  * onto a `baseBranch` that moved since the task's branch was cut is
  * exactly the shape of the cross-task collision that motivated this
- * (see wiki/decisions.md D-011): a real compile+test run is the check
+ * (see ../wiki/decisions.md D-011): a real compile+test run is the check
  * that matters here, not a static path guess. Never force-resolves a
  * conflict or a broken rebase — either always rewinds back to the task
  * branch's original tip and blocks for a human, exactly as an executor

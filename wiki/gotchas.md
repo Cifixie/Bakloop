@@ -167,8 +167,7 @@ planned, matching the main loop's own steady state.
 **Fix:** This is intended, not a bug — "fully spec'd" for a chained split means every
 task has a description/AC/DoD and the front of the chain has a plan; the rest plan
 just-in-time during real execution, exactly as before D-015. Nested splits (a subtask
-itself splitting again) are now exercised for real by this loop, since tree membership is
-recomputed via `rootAncestorId` after every tick with no special-casing for depth.
+itself splitting again) are implemented but have never been exercised end-to-end.
 
 ---
 

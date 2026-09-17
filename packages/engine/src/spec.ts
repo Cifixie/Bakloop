@@ -152,7 +152,7 @@ const AC_HEADER = /^\s*(?:#{2,4}\s*)?\*{0,2}Acceptance criteria\*{0,2}:\*{0,2}\s
  * model can decide to split, write a lead-in sentence ("I will split this
  * into four subtasks..."), and go straight into well-formed `## Subtask:`
  * blocks without ever emitting the bare marker — this happened for real
- * (TASK-1, see wiki/gotchas.md), and the fallback silently saved the whole
+ * (TASK-1, see ../wiki/gotchas.md), and the fallback silently saved the whole
  * reply, blocks included, as prose into Implementation Plan with no
  * children created. So: prefer the marker when present, but if it's
  * missing, treat the first line that matches `SUBTASK_HEADER` as the start

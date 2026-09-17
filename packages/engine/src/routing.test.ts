@@ -399,7 +399,7 @@ test("planner split is detected even without the literal SPLIT line (TASK-1, D-0
   // into well-formed `## Subtask:` blocks without ever emitting the bare
   // `SPLIT` marker. The old parser fell through to "plan", saving the whole
   // reply — prose plus subtask blocks — verbatim into Implementation Plan
-  // with no children created. See wiki/gotchas.md.
+  // with no children created. See ../wiki/gotchas.md.
   const noMarker = parsePlannerOutput(
     [
       "This task is substantial. I will split it into two independently",

@@ -8,6 +8,8 @@ This repo is a pnpm-workspace monorepo with three packages:
 | **web** | `packages/web/` | Next.js app (App Router, TypeScript). Placeholder scaffold — real UI work deferred. |
 | **shared** | `packages/shared/` | Placeholder for engine↔web shared code. Currently empty; wired as a dependency once `web` has a real need. |
 
+Also repo-wide: a `wiki/` covering all packages — decisions, gotchas, current work.
+
 To run anything: `pnpm --filter engine <script>` or `pnpm --filter web <script>`.
 Root `package.json` is private — no scripts or dependencies live here.
 

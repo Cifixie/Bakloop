@@ -9,6 +9,7 @@ This is a pnpm-workspace monorepo with three packages:
 - **`packages/engine/`** — the bakloop orchestrator (full details below)
 - **`packages/web/`** — Next.js web app (placeholder scaffold)
 - **`packages/shared/`** — shared types/utilities (placeholder)
+- **`wiki/`** — repo-wide: decisions, gotchas, current work
 
 ## Quick start
 

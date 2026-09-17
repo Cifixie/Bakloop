@@ -35,28 +35,28 @@ These are peer constraints — no single one sits above the others.
 - **A subtask's branch is its top-level ancestor's branch, not its immediate parent's.**
   `rootAncestorId` (`src/tick.ts`) walks `parentTaskId` to the root, so however many
   levels of splitting produced a subtask, it lands on one branch and one eventual PR. See
-  D-004, and the nested-splits entry in `wiki/gotchas.md` before relying on it for a
+  D-004, and the nested-splits entry in `../wiki/gotchas.md` before relying on it for a
   subtask that itself gets split.
 
-Each of these has a full rationale in `wiki/decisions.md`. Read it before proposing a
+Each of these has a full rationale in `../wiki/decisions.md`. Read it before proposing a
 change to any of them — these specific constraints are the one part of that file whose
 *behavior* you raise before changing, even though the file itself is yours to maintain.
 
 ## Working in this repo
 
 Read at the start of every session:
-1. `wiki/current-work.md` — where things stand right now
-2. `wiki/gotchas.md` — known traps, read before debugging anything
+1. `../wiki/current-work.md` — where things stand right now
+2. `../wiki/gotchas.md` — known traps, read before debugging anything
 
 There is deliberately no roadmap file: bakloop's development is feature-driven, not
-phased, so there is no build order to record. `wiki/current-work.md` carries the state
+phased, so there is no build order to record. `../wiki/current-work.md` carries the state
 instead.
 
 **Write access:**
-- `wiki/current-work.md` — update this as you go. Keep it to the current state, not a
+- `../wiki/current-work.md` — update this as you go. Keep this to the current state, not a
   changelog. Overwrite freely.
-- `wiki/gotchas.md` — append when you discover a new trap. Never rewrite existing entries.
-- `wiki/decisions.md` — **write it yourself, and keep it current.** Record a decision as
+- `../wiki/gotchas.md` — append when you discover a new trap. Never rewrite existing entries.
+- `../wiki/decisions.md` — **write it yourself, and keep it current.** Record a decision as
   `Accepted` the moment the behavior it describes is real: shipped, typechecked, and
   tested. Don't park it as a proposal for a human to countersign — an undecided record of
   decided behavior is worse than no record, because the next agent can't tell which of
@@ -67,7 +67,7 @@ instead.
     never quietly implement against a stale entry.
   - **`Proposed` is only for a genuinely open question** — a fork you can't resolve from
     the code, where you need the human to pick. It is not a waiting room for finished
-    work. If you write one, say so in chat *and* park it in `wiki/current-work.md`.
+    work. If you write one, say so in chat *and* park it in `../wiki/current-work.md`.
   - **Changing an accepted decision needs a reason in the entry, not permission in chat.**
     Rewriting the *record* to match reality is routine. Changing the *behavior* a hard
     constraint depends on is not — for those, see the hard-constraints list above and
@@ -83,16 +83,16 @@ Update in the same change that caused it, never "later":
 
 | When | Do |
 |---|---|
-| finishing any task | `wiki/current-work.md` — next action, blockers, what you learned |
-| deciding something the next agent must not re-litigate | add to `wiki/decisions.md` as `Accepted`, in this same change |
+| finishing any task | `../wiki/current-work.md` — next action, blockers, what you learned |
+| deciding something the next agent must not re-litigate | add to `../wiki/decisions.md` as `Accepted` in the same change |
 | finding a decision that no longer matches the code | rewrite it, or supersede it and write its successor — same change |
-| discovering a trap | append to `wiki/gotchas.md` |
+| discovering a trap | append to `../wiki/gotchas.md` |
 | removing or renaming anything | `git grep` the old name; fix or delete **every** reference |
 | a doc contradicts reality | reality wins — fix the doc in that same change |
 | any code review, including self-review before calling a task done | run the doc-consistency check below |
 
 **Doc-consistency check, as part of review.** Before a change is done, grep for whatever
-fact it touched — a config value, a threshold, a rule, a date field — across `wiki/`.
+fact it touched — a config value, a threshold, a rule, a date field — across `../wiki/`.
 Every fact gets exactly one home; everywhere else either doesn't mention it or points at
 the home (`"see D-004"`, `"see CLAUDE.md hard constraints"`) rather than restating it.
 Finding a second copy is a bug in the docs, not a coincidence — collapse it in the same
@@ -101,13 +101,13 @@ change, don't leave it for later.
 **Curate, don't accumulate.** Growth is not progress. Prefer deleting a stale section to
 patching it.
 
-**Keep `wiki/gotchas.md` capped** (see its own header for the number). It loads every
+**Keep `../wiki/gotchas.md` capped** (see its own header for the number). It loads every
 session, so length is a tax on every future task. Append freely; when a trap has become
 structurally impossible, propose removing it. Never change what an existing entry means.
 
-**Only genuinely open questions go under "Needs your sign-off" in `wiki/current-work.md`**
+**Only genuinely open questions go under "Needs your sign-off" in `../wiki/current-work.md`**
 — a fork you cannot resolve from the code. Anything you've already decided and shipped
-belongs in `wiki/decisions.md` as `Accepted`, written by you in the same change. Chat is
+belongs in `../wiki/decisions.md` as `Accepted`, written by you in the same change. Chat is
 lost when the session ends; both files are not.
 
 **One fact, one home.** If the same threshold, name, or procedure appears in two files,
@@ -157,14 +157,13 @@ value was in scope.
 
 ## Deliberately not built yet
 
-- **Nested splits** (a subtask itself getting split again) — architecturally possible,
-  never exercised. See `wiki/gotchas.md`.
+- **Nested splits** (a subtask itself getting split again) — implemented and unit-tested, but never run end-to-end in practice. See `../wiki/gotchas.md`.
 - **GitHub sync for `Done`** — `src/types.ts` anticipates "a future GitHub sync" setting
   top-level tasks to `Done`; nothing implements it yet.
 
 ## Map
 
-- `wiki/` — living state: decisions, gotchas, current work
+- `../wiki/` — living state: decisions, gotchas, current work
 - `src/journal.ts` + `src/report.ts` — the tick journal and its report; read these before
   trying to answer any question about how the loop performs
 - `README.md` — the pipeline diagram, safety model, and setup/run instructions; read it

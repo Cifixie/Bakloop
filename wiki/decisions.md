@@ -128,7 +128,7 @@ attempt's are.
 one level of nesting — a subtask of a subtask forked its own branch off its immediate
 parent, defeating the one-PR-per-ticket goal at the second level. `rootAncestorId` walks
 the whole chain instead (and throws on a cycle); tested in `routing.test.ts`. The
-nested-splits entry in `wiki/gotchas.md` is still live: this makes nesting correct on
+nested-splits entry in `gotchas.md` is still live: this makes nesting correct on
 paper, but it has never been exercised end-to-end.
 
 ---
@@ -356,7 +356,7 @@ never produced by the same split — are invisible to both mechanisms. Observed 
 TASK-1 and TASK-3, planned independently, ended up writing real conflicting logic into the
 same four files (`ingest-url/handler.ts`, `fetch-source/handler.ts`,
 `bookmark-digest-stack.ts`, `dynamo.ts`), and only a manually-run `npm run overlap book`
-caught it — nothing in the loop itself did. See `wiki/current-work.md` for the full
+caught it — nothing in the loop itself did. See `current-work.md` for the full
 `tmp/overlap-2.txt` finding.
 
 **The fork this needs a human on:** `findCollisions` (`src/overlap.ts`) already answers
@@ -513,7 +513,7 @@ any other stuck executor). `criticRounds` is a deliberately separate counter for
 exactly this reason — reusing `attempts` for it would have reintroduced the same
 stranding bug this decision's reorder just fixed, one layer down.
 
-**Known rough edge, not fixed here (see `wiki/gotchas.md`):** because `NEEDS_CHANGES_LABEL`
+**Known rough edge, not fixed here (see `gotchas.md`):** because `NEEDS_CHANGES_LABEL`
 only overrides the reordered senior-check while it's actively set, a task that
 interleaves several *raw* gate failures with critic rounds (rather than clean
 critic-round successes) could still, in principle, hit an in-between tick where
@@ -597,9 +597,9 @@ directly, so a redundant comment would just be one more thing to keep in sync.
 the main loop, `ToDo` already holds a fully spec'd task (or, if split, a tree of spec'd
 children) rather than a bare description+AC pair — the human's review is a judgment call
 on finished specs, not a nudge to specs-in-progress. Nested splits (a subtask itself
-getting split again) are exercised for real now, not just architecturally possible, since
-the tree filter is recomputed by walking `rootAncestorId` after every tick with no special
-casing — see the updated `wiki/gotchas.md` entry. This only changes the promotion
+getting split again) are implemented but have never been exercised end-to-end (the D-015
+promotion run split a top-level task, which doesn't exercise nesting). This only changes
+the promotion
 pipeline: the main loop (`npm start`) never sets `restrictToTree` or a draft-injecting
 `renderPrompt`, so its prompts are byte-for-byte unchanged. A dependency-chained split
 (child 2 depends on child 1) still only gets planned as far as `resolvePhase`'s own

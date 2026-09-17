@@ -22,10 +22,10 @@ installed and run via npm (`package-lock.json`, npm-managed `node_modules`). Thi
 finishes that half-done switch: npm artifacts are removed, pnpm becomes the real, only
 package manager.
 
-Note: `src/spec.ts`, `src/routing.test.ts`, and `wiki/gotchas.md`/`wiki/current-work.md`
-have uncommitted in-progress changes (an unrelated bug-fix session, per git status). These
-must move with the rest of `src/`/`wiki/` intact — use plain file moves (`git mv`/`mv`),
-never a checkout/reset that would discard them.
+Note: `src/spec.ts`, `src/routing.test.ts` have uncommitted in-progress changes
+(an unrelated bug-fix session, per git status). These must move with the rest of
+`src/` intact — use plain file moves (`git mv`/`mv`), never a checkout/reset that would
+discard them. `wiki/` lives at the repo root.
 
 ## Target layout
 
@@ -43,7 +43,7 @@ never a checkout/reset that would discard them.
       tsconfig.json         (as today)
       CLAUDE.md             (today's full content, path references adjusted)
       README.md             (today's full README, moved as-is)
-      src/  prompts/  wiki/  (moved as-is)
+      src/  prompts/  (moved as-is)
     web/
       package.json         — name "web", plain `create-next-app`-equivalent scripts
       next.config.ts, tsconfig.json, app/layout.tsx, app/page.tsx
@@ -62,20 +62,19 @@ code assumes (cwd-relative) keep working; verify by grepping `src/` for `"raw/"`
 ## Steps
 
 1. **Create `packages/engine/` and move the orchestrator into it** with `git mv`:
-   `src/`, `prompts/`, `wiki/`, `CLAUDE.md`, `README.md`, `tsconfig.json`. Move untracked
+   `src/`, `prompts/`, `CLAUDE.md`, `README.md`, `tsconfig.json`. Move untracked
    `raw/`, `tmp/` with `mv`. Update `packages/engine/package.json` (moved from root) to
    `"name": "engine"`, keep its scripts/deps as-is (they're already relative to that
    directory once it's the package cwd).
 
 2. **Grep for root-relative assumptions** now broken by the move: any `src/*.ts` code or
    `prompts/*.md` file that hardcodes a path like `"./raw"`, `"./tmp"`, `"./prompts"`,
-   `process.cwd()` combined with a root-relative join, or references to `wiki/`,
-   `CLAUDE.md`, `README.md` by absolute-from-repo-root path. Fix each to be relative to
+   `process.cwd()` combined with a root-relative join, or references to `CLAUDE.md`,
+   `README.md` by absolute-from-repo-root path. Fix each to be relative to
    `packages/engine` (they mostly already will be, since the code presumably resolves
    paths relative to its own module directory or cwd — verify, don't assume).
-
 3. **Fix internal doc cross-references.** `packages/engine/CLAUDE.md` and
-   `packages/engine/README.md` reference `src/`, `wiki/`, `prompts/` — those stay correct
+   `packages/engine/README.md` reference `src/`, `prompts/` — those stay correct
    since they're relative to the engine package itself. Add one line near the top of
    `packages/engine/CLAUDE.md` noting this is one package in a pnpm workspace (root
    `CLAUDE.md` is the entry point for repo layout).
@@ -112,15 +111,15 @@ code assumes (cwd-relative) keep working; verify by grepping `src/` for `"raw/"`
 10. **Verify**: `pnpm --filter engine run typecheck && pnpm --filter engine test` must
     pass exactly as before (same 36+ tests, no behavior change — this is a pure move).
     `pnpm --filter web run build` must succeed on the scaffolded Next.js app. Confirm
-    `git status` shows the uncommitted `spec.ts`/`routing.test.ts`/`wiki/*.md` changes
+    `git status` shows the uncommitted `spec.ts`/`routing.test.ts` changes
     still present as modifications under their new `packages/engine/` paths (not lost,
     not reverted).
 
 ## Files/areas to touch
 
-- Move (git mv): `src/**`, `prompts/**`, `wiki/**`, `CLAUDE.md`, `README.md`,
+- Move (git mv): `src/**`, `prompts/**`, `CLAUDE.md`, `README.md`,
   `tsconfig.json` → `packages/engine/`
-- Move (mv, untracked): `raw/`, `tmp/` → `packages/engine/`
+- Keep: `wiki/` at repo root
 - New: `packages/web/*` (Next.js scaffold), `packages/shared/*` (placeholder)
 - Rewrite: root `package.json`, root `CLAUDE.md`, root `README.md`,
   `pnpm-workspace.yaml`
