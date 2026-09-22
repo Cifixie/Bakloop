@@ -52,16 +52,17 @@ export interface Task extends TaskSummary {
   description: string | null;
   /** One of Backlog.md's configured task types (bug/feature/chore/...); the owner role sets it. */
   type: string | null;
-  dependencies: string[];
+  draftSource: string | null;
   readiness: Readiness;
   acceptanceCriteria: AcceptanceCriterion[];
-  /** The standing bar this task must clear, written by the `criteria` role alongside the AC. */
+  dependencies: string[];
+  /** The standing bar this task must clear, written by the criteria role alongside the AC. */
   definitionOfDone: DefinitionOfDoneItem[];
   implementationPlan: string | null;
   /**
    * GUIDANCE for the executor, and nothing else. Written only by architect,
    * researcher, and senior. Machine bookkeeping (gate failures, model-call
-   * failures) goes to `comments` instead, so this field stays small enough to
+   * failures) goes to comments instead, so this field stays small enough to
    * hand a local model every tick.
    */
   implementationNotes: string | null;
@@ -71,10 +72,6 @@ export interface Task extends TaskSummary {
   /** Non-empty once the planner has split this task; makes it a container, not an executable unit. */
   subtasks: { id: string; title: string }[];
 }
-
-
-
-
 export const TASK_TYPES = [
   "bug",
   "feature",

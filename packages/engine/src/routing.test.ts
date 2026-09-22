@@ -18,8 +18,11 @@ import {
   parsePlannerOutput,
 } from "./spec.js";
 import { isContextOverflow, rootAncestorId, siblingScopeFor } from "./tick.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Backlog } from "./backlog.js";
 import { STATUS, type Comment, type Task, type TaskSummary } from "./types.js";
-
 /**
  * Covers `resolvePhase`, which CLAUDE.md singles out as the one piece of
  * logic with no other verification signal: a bad routing choice corrupts the
@@ -46,6 +49,7 @@ function task(over: Partial<Task> = {}): Task {
     path: "",
     description: "a description",
     type: null,
+    draftSource: null,
     dependencies: [],
     readiness: { isReady: true, isBlocked: false, blockingDependencies: [], missingDependencies: [] },
     acceptanceCriteria: [{ index: 1, text: "ac", checked: false }],
@@ -578,4 +582,31 @@ test("a container with a known overlap stops instead of walking on to review", (
   assert.equal(resolvePhase(container, 0, NO_DOCS), null);
   // Without the label the same container proceeds to its alignment check.
   assert.equal(resolvePhase({ ...container, labels: [] }, 0, NO_DOCS)?.role, "architect");
+});
+// --- draft_source: schema column + inheritance + routing ---
+
+test("resolvePhase routes to owner when draftSource is set but description is blank", () => {
+  const t = task({
+    description: null,
+    draftSource: "original request text",
+    acceptanceCriteria: [],
+  });
+  const phase = resolvePhase(t, 0, NO_DOCS);
+  assert.equal(phase?.role, "owner", "should run owner to derive description from draftSource");
+  assert.equal(phase?.reason, "no description");
+});
+test("resolvePhase still routes to owner when draftSource is absent", () => {
+  const t = task({ description: null, draftSource: null });
+  const phase = resolvePhase(t, 0, NO_DOCS);
+  assert.equal(phase?.role, "owner", "should use owner when no draftSource");
+});
+test("Backlog round-trip: createDraft sets draft_source, createChild inherits it", async () => {
+  const db = new Backlog(join(mkdtempSync(join(tmpdir(), "bakloop-")), "tasks.db"));
+  const draftId = await db.createDraft("test", "Add search", "Search feature details");
+  await db.setDraftSource(draftId, "Original search requirements text");
+  const draft = db.view(draftId);
+  assert.equal(draft.draftSource, "Original search requirements text");
+  const childId = await db.createChild(draftId, "Implement search API", "test", { description: "GET /api/search" });
+  const child = db.view(childId);
+  assert.equal(child.draftSource, "Original search requirements text", "child inherits parent's draftSource");
 });

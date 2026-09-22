@@ -31,6 +31,8 @@ export interface ProjectEntry {
   path: string;
   /** The branch each task's own branch forks from, and is diffed against for gates. */
   baseBranch: string;
+  /** Short uppercase key used for task IDs (e.g. "BOOK" → BOOK-1). Defaults to key slug if omitted. */
+  prefix: string;
   /**
    * Opt-in (D-012): on green review, the agent itself rebases the task branch onto
    * `baseBranch`, re-runs gates, squash-merges, and marks the task Done — no human
@@ -50,8 +52,9 @@ export async function loadProjects(): Promise<ProjectMap> {
     const parsed = JSON.parse(raw) as Record<string, string | ProjectEntry>;
     const migrated: ProjectMap = {};
     for (const [key, value] of Object.entries(parsed)) {
-      // Pre-branching registrations stored a bare path string.
-      migrated[key] = typeof value === "string" ? { path: value, baseBranch: "main" } : value;
+      let entry: ProjectEntry = typeof value === "string" ? { path: value, baseBranch: "main", prefix: key.replace(/[^A-Z0-9]/gi, "").slice(0, 8).toUpperCase() } : value;
+      if (!entry.prefix) entry = { ...entry, prefix: key.replace(/[^A-Z0-9]/gi, "").slice(0, 8).toUpperCase() };
+      migrated[key] = entry;
     }
     return migrated;
   } catch {

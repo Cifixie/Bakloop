@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AcceptanceCriterion, Comment, DefinitionOfDoneItem, Task, TaskSummary } from "./types.js";
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS tasks (
   id                    TEXT PRIMARY KEY,
   title                 TEXT NOT NULL,
   project               TEXT NOT NULL,
@@ -14,6 +15,7 @@ const SCHEMA = `
   parent_task_id        TEXT,
   path                  TEXT NOT NULL,
   description           TEXT,
+  draft_source          TEXT,
   type                  TEXT,
   dependencies          TEXT,
   readiness             TEXT NOT NULL,
@@ -34,7 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 
 const COLUMNS = [
   "id", "title", "project", "status", "priority", "assignees", "labels",
-  "ordinal", "parent_task_id", "path", "description", "type", "dependencies",
+  "ordinal", "parent_task_id", "path", "description", "type", "draft_source", "dependencies",
   "readiness", "acceptance_criteria", "definition_of_done", "implementation_plan",
   "implementation_notes", "final_summary", "comments", "modified_files",
   "subtasks", "updated_at",
@@ -56,6 +58,7 @@ interface TaskRow {
   path: string;
   description: string | null;
   type: string | null;
+  draft_source: string | null;
   dependencies: string | null;
   readiness: string;
   acceptance_criteria: string | null;
@@ -82,12 +85,41 @@ export class Backlog {
   private insert: ReturnType<DatabaseSync["prepare"]>;
   private selectById: ReturnType<DatabaseSync["prepare"]>;
 
+  /** Project prefix for monotonic task IDs (set via setPrefix before use). */
+  private prefix: string = "";
+  /** Monotonic counter for PREFIX-N IDs. */
+  private counter = 0;
+
+  /** Set the project prefix for this Backlog instance. Must be called once at start-up. */
+  setPrefix(prefix: string): void {
+    this.prefix = prefix;
+  }
+
+  /** Derive next monotonic ID from existing tasks: PREFIX-N, DB-backed. */
+  private nextId(): string {
+    const stmt = this.db.prepare("SELECT id FROM tasks WHERE id LIKE ? ORDER BY id DESC LIMIT 1");
+    const row = stmt.get(`${this.prefix || "TASK"}-%`);
+    if (row) {
+      const id = (row as { id: string }).id;
+      const match = id.match(/^([A-Z]+)-(\d+)$/);
+      if (match && match[1] === (this.prefix || "TASK")) {
+        this.counter = Math.max(this.counter, Number(match[2]));
+      }
+    }
+    return `${this.prefix || "TASK"}-${++this.counter}`;
+  }
+
   constructor(dbPath: string) {
     const dir = join(dbPath, "..");
     mkdirSync(dir, { recursive: true });
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec(SCHEMA);
+    // Schema migrations — backward-compatible with existing DBs.
+    const cols = this.db.prepare("PRAGMA table_info(tasks)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "draft_source")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN draft_source TEXT");
+    }
     this.insert = this.db.prepare(INSERT);
     this.selectById = this.db.prepare(SELECT_BY_ID);
   }
@@ -107,7 +139,7 @@ export class Backlog {
     if (conditions.length > 0) {
       sql += " WHERE " + conditions.join(" AND ");
     }
-    sql += " ORDER BY ordinal ASC";
+    sql += " ORDER BY ordinal";
     const rows = this.db.prepare(sql).all(...params) as unknown as TaskRow[];
     return rows.map(toSummary);
   }
@@ -124,6 +156,9 @@ export class Backlog {
 
   async setDescription(id: string, description: string): Promise<void> {
     this.db.prepare("UPDATE tasks SET description = ?, updated_at = ? WHERE id = ?").run(description, now(), id);
+  }
+  async setDraftSource(id: string, text: string): Promise<void> {
+    this.db.prepare("UPDATE tasks SET draft_source = ?, updated_at = ? WHERE id = ?").run(text, now(), id);
   }
 
   async setType(id: string, type: string): Promise<void> {
@@ -197,15 +232,21 @@ export class Backlog {
     acceptanceCriteria?: string[];
     notes?: string;
     dependsOn?: string[];
+    draftSource?: string;
   }): Promise<string> {
-    const id = `TASK-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = this.nextId();
+    // Inherit draft_source from the parent task — the root draft text travels
+    // with every subtask so criteria/planner can always see the original ask.
+    const parentRow = this.selectById.get(parentId) as unknown as TaskRow | undefined;
+    const draftSource = opts.draftSource ?? parentRow?.draft_source ?? null;
     const ac = opts.acceptanceCriteria
       ? opts.acceptanceCriteria.map((text, i) => ({ index: i, text, checked: false }))
       : [];
     this.insert.run(
       id,
       title, project, "Backlog", null, "[]", "[]", 0, parentId, ".",
-      opts.description ?? "", null, opts.dependsOn ? JSON.stringify(opts.dependsOn) : null,
+      opts.description ?? "", null, draftSource,
+      opts.dependsOn ? JSON.stringify(opts.dependsOn) : null,
       '{"isReady":true,"isBlocked":false,"blockingDependencies":[],"missingDependencies":[]}',
       JSON.stringify(ac), "[]", null, opts.notes ?? "", null, "[]", "[]", "[]", now(),
     );
@@ -219,18 +260,26 @@ export class Backlog {
     this.db.prepare("UPDATE tasks SET comments = ?, updated_at = ? WHERE id = ?")
       .run(JSON.stringify(comments), now(), id);
   }
+
   async createDraft(project: string, title: string, description: string): Promise<string> {
-    const id = `TASK-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    this.insert.run(
+    const id = this.nextId();
+    this.db.prepare(
+      `INSERT OR REPLACE INTO tasks (
+        id, title, project, status, priority, assignees, labels,
+        ordinal, parent_task_id, path, description, type, draft_source, dependencies,
+        readiness, acceptance_criteria, definition_of_done, implementation_plan,
+        implementation_notes, final_summary, comments, modified_files,
+        subtasks, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
       id, title, project, "Draft", null, "[]", "[]", 0, null, ".",
-      description, null, null,
+      description, null, "", null,
       '{"isReady":true,"isBlocked":false,"blockingDependencies":[],"missingDependencies":[]}',
       "[]", "[]", null, null, null, "[]", "[]", "[]", now(),
     );
     return id;
   }
 }
-
 function toSummary(row: TaskRow): TaskSummary {
   const ac = parseJson(row.acceptance_criteria, []) as AcceptanceCriterion[];
   const readiness = JSON.parse(row.readiness) as { isReady: boolean };
@@ -255,6 +304,7 @@ function toFull(row: TaskRow): Task {
     path: row.path,
     description: row.description,
     type: row.type,
+    draftSource: row.draft_source,
     dependencies: parseJson(row.dependencies, []) as string[],
     readiness: JSON.parse(row.readiness) as { isReady: boolean; isBlocked: boolean; blockingDependencies: string[]; missingDependencies: string[] },
     acceptanceCriteria: parseJson(row.acceptance_criteria, []) as AcceptanceCriterion[],

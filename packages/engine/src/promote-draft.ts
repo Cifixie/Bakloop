@@ -8,6 +8,7 @@ import { createJournal } from "./journal.js";
 import { createLogStore } from "./log.js";
 import { renderPrompt } from "./prompts.js";
 import { rootAncestorId, tick } from "./tick.js";
+import { STATUS } from "./types.js";
 
 /** Safety cap on the plan-mode loop below — real progress always stops well before this. */
 const MAX_PLAN_TICKS = 40;
@@ -43,6 +44,7 @@ async function main() {
   }
 
   const backlog = new Backlog(tasksDbPath());
+  backlog.setPrefix(projects[project]!.prefix);
   const entry = projects[project]!;
 
   const drafts = backlog.list(project, "Draft");
@@ -64,11 +66,11 @@ async function promoteOne(
   entry: { path: string; baseBranch: string },
 ): Promise<void> {
   const task = backlog.view(draftId);
+  const rawDraftText = task.description ?? "";
   if (task.status !== "Draft") throw new Error(`Task "${draftId}" is not a draft (status: ${task.status}).`);
+  await backlog.setStatus(draftId, STATUS.todo);
 
-  await backlog.setDescription(draftId, "");
-  await backlog.setStatus(draftId, "Backlog");
-
+  await backlog.setDraftSource(draftId, rawDraftText);
   console.info(`Promoted ${draftId}, project="${project}". Running the plan-mode loop...`);
 
   const { loadLog, saveLog } = createLogStore(stateDir(project));
@@ -90,8 +92,8 @@ async function promoteOne(
         saveLog,
         renderPrompt: (role, task) => {
           const base = renderPrompt(role, task);
-          return task.description
-            ? `${base}\n\n## Original request (verbatim — do not summarize further)\n\n${task.description}`
+          return rawDraftText
+            ? `${base}\n\n## Original request (verbatim — do not summarize further)\n\n${rawDraftText}`
             : base;
         },
         journal,
@@ -117,7 +119,7 @@ async function promoteOne(
 }
 
 async function printTreeSummary(backlog: Backlog, project: string, rootId: string): Promise<void> {
-  const all = backlog.list(undefined, project);
+  const all = backlog.list(project);
   const inTree = all.filter((t) => rootAncestorId(t.id, all) === rootId).sort((a, b) => a.ordinal - b.ordinal);
 
   console.info(`\n--- ${rootId}'s tree, ready for review ---`);

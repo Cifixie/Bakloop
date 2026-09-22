@@ -573,8 +573,8 @@ decision D-007/D-008 already treat as consequential enough to need an architect 
 and overlap checking — was always made on a summary of a summary, never on the human's
 actual words.
 
-**Decision:** Promotion now creates the real task first (`backlog draft promote`,
-`src/promote-draft.ts`), blanks its description to force a normal `owner` pass, and then
+**Decision:** Promotion creates the real task first (`backlog draft promote`,
+`src/promote-draft.ts`), keeps the verbatim draft text intact (persisted as `draft_source`, D-018), and
 drives it through a tree-scoped, planning-only run of the ordinary tick loop
 (`tick()`/`runTick()` in `src/tick.ts`, new `TickOptions.restrictToTree`): candidates are
 filtered to the draft's own tree (`rootAncestorId(t.id, all) === restrictToTree`), and any
@@ -582,28 +582,85 @@ tick whose `resolvePhase` role falls outside `owner | criteria | researcher | ar
 planner` returns immediately with `outcome: "planning-complete"` instead of running it —
 this is what stops the loop from ever reaching `executor` (or any judgment-on-execution
 role) on a sibling that finished planning first while others in the same tree are still
-being spec'd. Every tick in this run uses a `renderPrompt` wrapper
-(`promote-draft.ts`'s `renderWithDraft`) that appends the verbatim draft text as an extra,
-unconditional context block after whatever the role's normal `CONTEXT` policy already
-includes — so `owner`, `criteria`, `researcher`, `architect`, and `planner` all see the
-full original ask, not a rationed summary, for as many ticks as planning this tree takes.
-The old `fakeTask`/`owner-from-draft.md`/`status: "Draft"` machinery is deleted — it's
-fully subsumed by running the real roles on the real task with the draft injected. The
-`@draft` comment-archiving step is also removed: it existed only because the draft's
-content used to be reachable no other way; now every planning role already sees it
-directly, so a redundant comment would just be one more thing to keep in sync.
+being spec'd. Every tick in this run uses a `renderPrompt` wrapper (`promote-draft.ts`'s
+renderPrompt override) that appends the `draftSource` text as an extra, unconditional
+context block after whatever the role's normal `CONTEXT` policy already includes — so
+`criteria`, `researcher`, `architect`, and `planner` all see the full original ask, not a
+rationed summary, for as many ticks as planning this tree takes. Because `resolvePhase`
+now routes to `criteria` directly when `draftSource` is non-blank, the `owner` rewrite
+never runs on the root task and the original draft text is never overwritten. The old
+`fakeTask`/`owner-from-draft.md`/`status: "Draft"` machinery is deleted — fully subsumed
+by running the real roles on the real task. A DB `draft_source` column replaces the
+deleted `@draft` comment — it's inherited by every child via `createChild`, so the
+original ask travels with the entire subtree.
 
 **Consequences:** By the time a human looks at Backlog.md between promotion and starting
 the main loop, `ToDo` already holds a fully spec'd task (or, if split, a tree of spec'd
 children) rather than a bare description+AC pair — the human's review is a judgment call
 on finished specs, not a nudge to specs-in-progress. Nested splits (a subtask itself
 getting split again) are implemented but have never been exercised end-to-end (the D-015
-promotion run split a top-level task, which doesn't exercise nesting). This only changes
-the promotion
-pipeline: the main loop (`npm start`) never sets `restrictToTree` or a draft-injecting
-`renderPrompt`, so its prompts are byte-for-byte unchanged. A dependency-chained split
-(child 2 depends on child 1) still only gets planned as far as `resolvePhase`'s own
-`readiness.isBlocked` check allows — same as it already worked in the main loop — so
-"fully spec'd" means every task has a description/AC/DoD, and either a written plan or a
-completed split; a task gated behind an unfinished sibling is planned once that sibling
-reaches `Done` during real execution, exactly as before this change.
+promotion run split a top-level task, which doesn't exercise nesting). The `draft_source`
+column and `resolvePhase` skip-owner logic apply equally in the main loop — the verbatim
+draft text remains available to every role throughout execution, not just during planning.
+A dependency-chained split (child 2 depends on child 1) still only gets planned as far as
+`resolvePhase`'s own `readiness.isBlocked` check allows — same as it already worked before
+— so "fully spec'd" means every task has a description/AC/DoD, and either a written plan
+or a completed split; a task gated behind an unfinished sibling is planned once that
+sibling reaches `Done` during real execution, exactly as before this change.
+
+---
+
+## D-016 — Project prefix for task IDs: every project gets a short uppercase prefix (e.g. BOOK) and task IDs are `PREFIX-N` (BOOK-1, BOOK-2)
+
+**Date:** 2026-09-21
+**Status:** Accepted
+
+**Context:** Without a prefix, task IDs across different projects look like `TASK-1`, `TASK-2` — indistinguishable in logs, overlap reports, and stale tickets. The project key itself could be the prefix, but long URL keys (`https://github.com/...`) produce ugly derived strings (`HTTPSGIT`). A short, human-readable prefix gives every project a visible identifier in task IDs, list output, and CLI usage.
+
+**Decision:** `ProjectEntry` carries a `prefix: string` field. Every registered project gets one — either supplied via `--prefix=ABC` at registration time, or auto-derived from the key slug (`/[^A-Z0-9]/gi → uppercase → 8-char max`). The Backlog class calls `setPrefix(prefix)` at start-up; `nextId()` queries the DB for `SELECT id FROM tasks WHERE id LIKE ?` with `${prefix}-%`, does exact-segment matching in JS (`/^PREFIX-(\d+)$/`), takes `max+1` of numeric suffixes, and returns `PREFIX-N`. The prefix is unique across all registered projects (validated at register time; a collision during re-registration against an existing key is rejected).
+
+**Consequences:** Task IDs now start with the project prefix: `BOOK-1` instead of `TASK-1`. `pnpm run list` shows `(main) [BOOK]` per entry. `pnpm run unregister` accepts either the exact key or the prefix (first-match wins; errors on ambiguous matches). Legacy entries without a stored prefix get one derived from the key slug during migration in `loadProjects()`. Registering the same project again with a different prefix is rejected (prefix uniqueness enforced).
+
+---
+
+## D-017 — Unregister: `pnpm run unregister <key|prefix> [--remove-clones]`
+
+**Date:** 2026-09-21
+**Status:** Accepted
+
+**Context:** There was no unregister command. Mistakes — wrong project key, wrong path — could only be fixed by editing `~/.bakloop/projects.json` by hand.
+
+**Decision:** `src/unregister-project.ts` resolves its argument as an exact key first, then by prefix (reverse lookup into `projects.json`). It always removes the per-project state directory (`~/.bakloop/state/<key>/`). With `--remove-clones`, it only deletes clone directories under `~/.bakloop/clones/`; developer checkouts are never touched regardless of flag.
+
+**Consequences:** A typo `--remove-clones` on a non-clone entry (e.g. a local path) is a no-op for the directory — only the registry entry and state are dropped. To delete a developer checkout, the user must remove it manually or edit `projects.json`.
+
+---
+
+## D-018 — Draft text survives promotion in a draft_source column, not the description field
+
+**Date:** 2026-09-21
+**Status:** Accepted
+
+**Context:** D-015 originally promoted drafts by blanking the task description and running a
+full owner pass. That approach lost the original draft words the moment the owner overwrote
+the description, and the @draft comment hack was fragile. The promote-draft loop was later
+broken by two bugs: setDescription(draftId, "") wiped the draft text before any tick ran,
+and backlog.list(undefined, project) passed the project name in the status slot, so the
+loop found zero tasks and never ran any roles.
+
+**Decision:** The verbatim draft text persists in a draft_source TEXT column on the tasks
+table. resolvePhase routes to criteria directly when draftSource is non-blank — the
+owner rewrite never runs on the root task, so the original words are never overwritten.
+createChild inherits draftSource from the parent, so every subtask carries the original
+ask. Both loops (promote-draft.ts and main.ts) inject draftSource as an Original
+request block in renderPrompt, visible to every role throughout the lifecycle. The
+list(project) call-order fix in four sites ensures the tree is actually enumerated.
+
+**Consequences:** draft_source is a read-only reference — no role writes it, no role can
+overwrite it. The column is added via constructor migration (ALTER TABLE tasks ADD COLUMN
+draft_source TEXT) so existing DBs work without migration. The CREATE TABLE IF NOT EXISTS
+schema already includes draft_source for fresh DBs. this.insert in createChild uses
+the shared INSERT constant derived from COLUMNS, so column order is always consistent —
+a new column added to COLUMNS requires updating INSERTs placeholder count, which the
+named-INSERT createDraft pre-empts. The two list() call-order bugs are fixed: all four
+sites now call backlog.list(project) instead of backlog.list(undefined, project).

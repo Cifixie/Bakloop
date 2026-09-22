@@ -208,3 +208,17 @@ the marker is present and only relaxes the header format after it).
 instead of falling through to "plan". A bare mention of the word "subtask" in prose with no
 actual header still parses as a plan, unchanged. See `src/routing.test.ts`'s
 "planner split is detected even without the literal SPLIT line" test.
+
+---
+
+## Auto-derived prefix collision from different keys
+
+**Symptom:** Two projects register without `--prefix` but derive the same prefix slug
+(e.g. `HTTPSGIT` for two different GitHub URLs), and the collision check at register
+time should catch it.
+**Cause:** `key.replace(/[^A-Z0-9]/gi, "").slice(0, 8).toUpperCase()` strips all
+non-alphanumeric characters, so different URLs can collapse to the same 8-char slug.
+**Fix:** Register with explicit `--prefix=ABC` to guarantee uniqueness. The collision
+check at register time rejects duplicates, but the derived prefix is a last resort
+for legacy entries. If two legacy entries collide after migration (e.g. both were
+registered before D-016), re-register one with `--prefix=NEW` to disambiguate.

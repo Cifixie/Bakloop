@@ -66,8 +66,12 @@ async function main() {
       }
     }
     if (!title) throw new Error("Could not determine a title — type one manually.");
+    const projects = await loadProjects();
+    const entry = projects[project];
+    if (!entry) throw new Error(`"${project}" is not registered.`);
 
     const backlog = new Backlog(tasksDbPath());
+    backlog.setPrefix(entry.prefix);
     const id = await backlog.createDraft(project, title, description);
     console.info(`Created draft ${id} — run "tsx src/promote-draft.ts ${project}" to have AI craft it into a real task.`);
   }

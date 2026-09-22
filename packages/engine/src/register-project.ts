@@ -40,9 +40,8 @@ async function cloneRemote(source: string, dest: string): Promise<string> {
 }
 
 /**
- * `tsx src/register-project.ts <key> [path|url] [--autonomous]` — maps a
- * project lane to a repo in the shared registry, records the base branch
- * every task branch forks from and is diffed against.
+ * — maps a project lane to a repo in the shared registry. `--prefix` sets
+ * * the short uppercase task-ID prefix (defaults to key slug).
  *
  * Two registration shapes (D-012):
  * - An existing local directory registers exactly as before: supervised —
@@ -58,9 +57,26 @@ async function cloneRemote(source: string, dest: string): Promise<string> {
 async function main() {
   const args = process.argv.slice(2);
   const autonomousFlag = args.includes("--autonomous");
-  const [key, sourceArg] = args.filter((a) => a !== "--autonomous");
+  const prefixFlag = args.find((a) => a.startsWith("--prefix="))?.slice(9);
+  const nonFlag = args.filter((a) => a !== "--autonomous" && !a.startsWith("--prefix="));
+  const [key, sourceArg] = nonFlag;
   if (!key) {
-    console.error(colorError("usage: tsx src/register-project.ts <key> [path|url] [--autonomous]"));
+    console.error(colorError("usage: tsx src/register-project.ts <key> [path|url] [--autonomous] [--prefix=ABC]"));
+    process.exitCode = 1;
+    return;
+  }
+
+  const projects = await loadProjects();
+  const prefix = prefixFlag || key.replace(/[^A-Z0-9]/gi, "").slice(0, 8).toUpperCase();
+
+  if (!prefix || prefix.includes("-")) {
+    console.error(colorError("Prefix must be non-empty uppercase letters/numbers with no dashes (e.g. --prefix=BOOK)."));
+    process.exitCode = 1;
+    return;
+  }
+  const collision = Object.entries(projects).find(([k, e]) => k !== key && e.prefix === prefix);
+  if (collision) {
+    console.error(colorError(`Prefix "${prefix}" already used by "${collision[0]}".`));
     process.exitCode = 1;
     return;
   }
@@ -100,8 +116,7 @@ async function main() {
     }
   }
 
-  const projects = await loadProjects();
-  projects[key] = { path: repoPath, baseBranch, ...(autonomous ? { autonomous } : {}) };
+  projects[key] = { path: repoPath, baseBranch, prefix, ...(autonomous ? { autonomous } : {}) };
   await saveProjects(projects);
   console.info(`Registered "${key}" -> ${repoPath} (base branch: ${baseBranch}${autonomous ? ", autonomous" : ""})`);
 }

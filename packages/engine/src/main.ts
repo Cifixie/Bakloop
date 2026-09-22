@@ -58,6 +58,7 @@ async function main() {
     });
   }
   const backlog = new Backlog(tasksDbPath());
+  backlog.setPrefix(entry.prefix);
   const { loadLog, saveLog } = createLogStore(stateDir(project));
   const gateConfigPath = join(stateDir(project), "gates.json");
   // Records every tick to `state/<project>/journal.db` for `npm run report`.
@@ -119,7 +120,11 @@ async function main() {
           runAgent,
           loadLog,
           saveLog,
-          renderPrompt,
+          renderPrompt: (role, task) => {
+            const base = renderPrompt(role, task);
+            if (!task.draftSource) return base;
+            return `${base}\n\n## Draft source\n\n${task.draftSource}`;
+          },
           journal,
           autonomousIntegration: Boolean(autonomous),
         });

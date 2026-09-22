@@ -11,6 +11,8 @@
     "start": "tsx src/main.ts",
     "setup": "tsx src/setup.ts",
     "register": "tsx src/register-project.ts",
+    "unregister": "tsx src/unregister-project.ts",
+    "list-projects": "tsx src/list-projects.ts",
     "new-draft": "tsx src/create-draft.ts",
     "promote-draft": "tsx src/promote-draft.ts",
     "report": "tsx src/report.ts",

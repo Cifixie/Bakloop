@@ -316,7 +316,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
     autonomousIntegration,
   } = opts;
 
-  const all = await backlog.list(undefined, project);
+  const all = await backlog.list(project);
   const containers = containerIds(all);
 
   // Hard invariant, scoped to this project. If this ever trips, stop and report — do not continue.
@@ -555,10 +555,15 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
         const created: string[] = [];
         for (const child of parsed.children) {
           const id = await backlog.createChild(task.id, child.title, project, {
-            description: child.description,
-            acceptanceCriteria: child.acceptanceCriteria,
+            // Leave description blank so the child's own plan-mode pass runs
+            // owner → criteria → planner — uniform with promotion.
+            // draftSource = root's verbatim request + split proposal (delimited).
+            // Passing opts.draftSource overrides createChild's parent inheritance
+            // (backlog.ts:241), so we must explicitly include the root's text.
+            // AC omitted so criteria re-derives from the full draftSource.
             notes: contract,
             dependsOn: created.length > 0 ? [created[created.length - 1]!] : [],
+            draftSource: [task.draftSource, child.description].filter(Boolean).join("\n\n---\n\n## Subtask proposal\n\n"),
           });
           created.push(id);
         }
@@ -568,7 +573,7 @@ async function runTick(opts: TickOptions, record: TickRecord): Promise<TickResul
         // shape — the earliest point the question is answerable and the
         // cheapest point to act on it. No model: two tasks naming the same
         // path in their own criteria will write that file twice. See D-009.
-        const freshAll = await backlog.list(undefined, project);
+        const freshAll = await backlog.list(project);
         const inTree = freshAll.filter((t) => rootAncestorId(t.id, freshAll) === rootAncestorId(task.id, freshAll));
         const collisions = findCollisions(await Promise.all(inTree.map((t) => backlog.view(t.id))), freshAll);
         // Only real code collisions stop the loop. A manifest or an

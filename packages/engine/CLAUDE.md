@@ -44,13 +44,27 @@ change to any of them — these specific constraints are the one part of that fi
 
 ## Working in this repo
 
+### Scripts
+
+| Script | Usage |
+|---|---|
+| `pnpm --filter engine run register` | `pnpm run register <key> [path|url] [--autonomous] [--prefix=ABC]` |
+| `pnpm --filter engine run unregister` | `pnpm run unregister <key|prefix> [--remove-clones]` |
+| `pnpm --filter engine run list-projects` | Shows all registered projects with prefix |
+| `pnpm --filter engine run new-draft` | Create a draft task |
+| `pnpm --filter engine run promote-draft` | Promote drafts to tasks |
+| `pnpm run promote-draft` | `pnpm run promote-draft <key>` — promote drafts to tasks |
+| `pnpm --filter engine run start` | Main tick loop |
+| `pnpm --filter engine run overlap` | Check for file overlap across tasks |
+| `pnpm --filter engine run report` | Report on tick metrics |
+| `pnpm --filter engine run typecheck` | TypeScript type check |
+| `pnpm --filter engine run test` | Run engine tests |
+
 Read at the start of every session:
 1. `../wiki/current-work.md` — where things stand right now
 2. `../wiki/gotchas.md` — known traps, read before debugging anything
 
-There is deliberately no roadmap file: bakloop's development is feature-driven, not
-phased, so there is no build order to record. `../wiki/current-work.md` carries the state
-instead.
+**No inline plan file.** `wiki/ROADMAP.md` holds future-facing proposals (not yet decided). If something requires a multi-step sequence during this session, write the steps directly into this document under `### Action items` (or below) rather than creating a new plan file.
 
 **Write access:**
 - `../wiki/current-work.md` — update this as you go. Keep this to the current state, not a

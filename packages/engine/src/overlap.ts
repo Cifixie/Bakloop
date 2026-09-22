@@ -201,7 +201,7 @@ async function main() {
   }
 
   const backlog = new Backlog(tasksDbPath());
-  const all = await backlog.list(undefined, project);
+  const all = await backlog.list(project);
   if (all.length === 0) {
     console.info(`No tasks for "${project}".`);
     return;
