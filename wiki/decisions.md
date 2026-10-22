@@ -178,7 +178,12 @@ losing that tick's state.
 ## D-007 — A split requires an architect-written interface contract before children exist; a container requires a second alignment pass before review
 
 **Date:** 2026-09-08
-**Status:** Accepted
+**Status:** Accepted (role mechanics partly superseded by D-019)
+
+**Role mechanics partly superseded by D-019:** the requirement itself is unchanged — no
+children until an interface contract exists, and no container review until an alignment
+pass. Both are now Architect *modes* (`planning` writes the contract; the split-alignment
+mode runs the second check) rather than separate `architect` ticks with labels.
 
 **Context:** The planner splits a task into subtasks with zero visibility into any
 sibling's plan (context is rationed per role/per task — see the rationale in
@@ -211,7 +216,12 @@ on `book`'s `TASK-1.4` subtree.
 ## D-008 — Split children are dependency-chained, and scope-deciding roles see what the rest of the tree already owns
 
 **Date:** 2026-09-09
-**Status:** Accepted
+**Status:** Accepted (role names superseded by D-019)
+
+**Role names superseded by D-019:** both mechanisms survive unchanged — children are still
+dependency-chained via `createChild`'s `dependsOn`, and the scope-deciding role
+(`SiblingScope` recipient) is now the Architect, which absorbed `planner`. The
+executor-exclusion rationale is likewise unchanged.
 
 **Context:** D-007 seeds every child of a split with one architect contract, which stops
 siblings from independently inventing the same shared artifact *within one split*. Two
@@ -449,7 +459,13 @@ that's mid-attempt on it.
 ## D-013 — A real review gate: `critic`, with push-back and re-spec, ahead of `reviewer`
 
 **Date:** 2026-09-09
-**Status:** Accepted
+**Status:** Superseded by D-019
+
+**Superseded by D-019:** the `critic` role is retired; its independent-judgment-of-the-
+diff responsibility moves to the `tester` role, which returns `PASS`/`CHANGES` and fails
+closed on an ambiguous verdict. The rationale below (an adversarial, read-only role
+judging a *different* role's finished diff, bounded push-back, container-blocked fallback)
+carries forward; only the role name and verdict vocabulary change. Kept for the record.
 
 **Context:** `prompts/reviewer.md` says outright *"your job is not to re-verify
 correctness but to write the final summary"* — it's read-only and `tick.ts` never
@@ -526,7 +542,12 @@ not silently wrong — not worth a second parallel counter for a case this narro
 ## D-014 — Retire D-002: `ToDo` replaces `Waiting for Approval` + `Ready for Work`, no human gate
 
 **Date:** 2026-09-09
-**Status:** Accepted
+**Status:** Superseded by D-019
+
+**Superseded by D-019:** the status *collapse* into `ToDo` and the "no human gate between
+planning and execution" conclusion both survive, but the roles named here (`planner` parks
+a task in `ToDo`; `resolvePhase`'s executor gate) are replaced by the Architect
+planning mode and Executor routing. Kept for the record of how the collapse was made.
 
 **Context:** D-002 required a human to move a spec+plan'd task from `Waiting for
 Approval` to `Ready for Work` before the executor phase could begin, on the reasoning
@@ -559,7 +580,13 @@ again.
 ## D-015 — Draft promotion runs the full plan-mode loop, with the verbatim draft kept in context for every planning tick
 
 **Date:** 2026-09-09
-**Status:** Accepted
+**Status:** Superseded by D-019
+
+**Superseded by D-019:** the draft entity and promotion command are removed. A captured
+task now holds its request verbatim in a `raw` field on a normal task, so there is no
+promotion step to keep context across. The insight this entry contributed — planning must
+run on the human's actual words, never a summary of a summary — is preserved by `raw` being
+immutable and available to every role. Kept for the record.
 
 **Context:** Before this change, `promote-draft.ts` ran exactly one summarization pass:
 it wrapped the raw draft text in a `fakeTask` (stuffed into `implementationNotes`, with a
@@ -639,7 +666,7 @@ sibling reaches `Done` during real execution, exactly as before this change.
 ## D-018 — Draft text survives promotion in a draft_source column, not the description field
 
 **Date:** 2026-09-21
-**Status:** Accepted
+**Status:** Superseded by D-019
 
 **Context:** D-015 originally promoted drafts by blanking the task description and running a
 full owner pass. That approach lost the original draft words the moment the owner overwrote
@@ -664,3 +691,97 @@ the shared INSERT constant derived from COLUMNS, so column order is always consi
 a new column added to COLUMNS requires updating INSERTs placeholder count, which the
 named-INSERT createDraft pre-empts. The two list() call-order bugs are fixed: all four
 sites now call backlog.list(project) instead of backlog.list(undefined, project).
+
+**Superseded by D-019:** the draft entity, the promotion workflow, and the `draft_source`
+column are retired in favor of a plain task `raw` field. This entry stays for the record of
+how the draft path worked while it was live.
+
+---
+
+## D-019 — Serial Architect → Executor → Tester workflow replaces the multi-role pipeline
+
+**Date:** 2026-10-10
+**Status:** Accepted (implementation shipped; see `current-work.md` for verification limits)
+
+**Context:** The multi-role pipeline (owner, criteria, researcher, planner, senior,
+documenter, critic, reviewer) accumulated roles that each wrote one field and mostly
+mirrored each other's context, and the draft → promote → main-loop split made capture a
+two-step ceremony the human had to drive. Rationing context per role stopped paying for
+itself once roles overlapped, and the split between planning-time and execution-time
+verification (critic judging a diff, architect checking alignment) had grown into several
+narrow, independently-routed gates. The user asked for a simpler shape: one ticket at a
+time, three task-facing roles, and no separate draft entity.
+
+**Decision:** Replace the task-facing roles with three — **Architect**, **Executor**,
+**Tester** — and process one top-level ticket at a time.
+
+- **Task shape.** Every captured task is a normal backlog task (no `Draft` status, no
+  promotion command). It carries an immutable `raw` field holding the request verbatim
+  (editable only by an explicit human edit) — the source of truth for planning, kept
+  available to later roles. `description` is optional human-facing text about why the work
+  matters; the system never rewrites it from `raw`. `acceptanceCriteria` / `definitionOfDone`
+  / `implementationPlan` are produced by the Architect from `raw` and `description`.
+- **Architect modes**, each a distinct tick with its own context boundary and `mode` field:
+  - `criteria` — toolless; sees only `raw` and the human `description`, never repository
+    contents or an implementation plan. Writes acceptance criteria + DoD. This preserves
+    the old `criteria` isolation as a mode rather than a separate role.
+  - `planning` — read-only; takes the criteria and bounded repository context, writes a
+    bounded `implementationPlan`, or a scoped split (child `raw`/title/description plus a
+    shared interface contract) before any child exists.
+  - `research` — read-only, on demand only (equivalent to the old `needs-research` route);
+    ordinary tasks never pay for a research pass.
+  - one-shot reassessment — after repeated gate/Tester failure, the Architect may revise
+    the plan exactly once; continued failure blocks for a human rather than looping.
+  - split alignment — once every child is Done, checks the combined result against the
+    shared contract before the parent can proceed.
+  The Architect never writes source files.
+- **Executor** owns all source *and* documentation writes (`read`/`write`/`edit`/`bash`);
+  the old docs-only `documenter` role and its `docsWrite`/`docsEdit` tool boundary are
+  retired. Deterministic gates (`tsc`/`biome`/`vitest`/diff) remain the sole pass/fail
+  signal for the code; gate failures return the actual failure output to the Executor.
+- **Tester** is read-only, sees the criteria, `raw`, plan, and the *actual* diff, and
+  answers `PASS` or `CHANGES`. `CHANGES` returns actionable findings to the Executor and
+  triggers another gate-and-test cycle; repeated rejection is bounded and then blocks for a
+  human. An unparseable or ambiguous verdict **fails closed** (treated as `CHANGES`, i.e.
+  blocking). Tester replaces critic + reviewer, and adds a semantic quality gate *on top of*
+  the deterministic gates rather than replacing them — like D-007/D-013's verdicts it can
+  only add a gate on already-green work, never bypass one (D-001 boundary unchanged).
+- **Scheduling.** Selection locks to one eligible top-level task's tree until its root
+  reaches `Done` or `Blocked`; descendants execute serially in dependency order on the
+  root's branch (D-004 unchanged). Only one task `In Progress` per project, as before. A
+  later top-level task is never Architect-planned while the current one is unfinished.
+- **Gates and completion.** A leaf advances only after deterministic gates and a Tester
+  `PASS`; then it is `Done` (children) or `Review` (top-level). A split parent additionally
+  requires every child `Done`, Architect alignment, and an integrated-diff Tester pass. The
+  old subtask self-finalize-on-green-gates shortcut is gone — a subtask now also waits for
+  Tester.
+- **Clean-slate rollout.** Runtime task migration and old-schema compatibility are not
+  supported. Before a project starts the new workflow, clean-start resets only that
+  project's task rows and per-task attempt logs; it preserves the shared database and
+  every other project's rows, registration, target-repo files, and all branches/history.
+  As an additive schema cutover, the operation adds the required `raw` column to the
+  shared table but does not migrate retained rows. Each project must be clean-started
+  before its legacy rows can enter the new loop. Because IDs name branches, selected
+  project receives a fresh globally unique prefix before rows are cleared; old branches
+  are never deleted/reused and retained journals/transcripts never feed control flow.
+- **Unchanged constraints.** `git push` stays hard-blocked unconditionally (D-003);
+  supervised projects keep human-owned merge/`Done`; autonomous (`autonomous: true`)
+  projects keep their explicit opt-in behavior (D-012); routing stays deterministic, and
+  model output may supply bounded content or a parsed, fail-closed verdict but never bypass
+  gates or assert completion.
+
+**Supersedes:** D-002/D-014 (statuses and human gate — the `ToDo` collapse survives, but
+the `owner`/`criteria`/`planner` routing described there is replaced), D-013 (`critic`),
+D-015/D-018 (draft promotion and `draft_source`), and the role routing in D-007/D-008 (the
+*behavior* they protect — architect contract before a split, dependency-chained children,
+alignment before review — is carried forward into the Architect's planning/alignment modes;
+only role names and route mechanics change). D-001, D-003, D-004, D-005, D-006, D-009,
+D-010, D-011, D-012, D-016, D-017 remain in force — D-016's prefix mechanism is what the
+rollout's identity-safety step relies on.
+
+**Consequences:** Three task-facing roles with modes keep the workflow auditable while
+reducing repeated role hand-offs. Journal records retain role, mode, reason, sizes, tool
+calls, durations, gate outcomes, and Tester rounds for later comparison. Focused typecheck,
+tests, and a scripted split-to-review scenario passed; no local-model smoke or historical
+journal comparison was performed. See `current-work.md` for those remaining verification
+limits.

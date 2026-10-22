@@ -3,38 +3,43 @@
 Current state only — not a changelog. Overwrite this file, don't append to it.
 History lives in git.
 
-**Two promote-draft bugs fixed + draft_source feature — shipped.** The promote loop now
-finds tasks and preserves verbatim draft text through the entire lifecycle.
+## In progress: serial Architect → Executor → Tester refactor (D-019)
 
-**Bug fixes:**
-- `promote-draft.ts:71` — removed `await backlog.setDescription(draftId, "")` that wiped
-  the draft text before any tick ran. The draft text is now preserved.
-- `backlog.list(undefined, project)` — project name was passed as the status parameter,
-  making the query `WHERE status = 'book'` which matched nothing. Fixed to
-  `backlog.list(project)` in tick.ts (×2), overlap.ts, and promote-draft.ts.
+The D-019 workflow is implemented in the engine and passes focused typecheck/tests. The
+capture command stores request bytes verbatim; Architect modes, serial root-tree routing,
+gate-before-Tester review, bounded rework, split alignment, integrated testing and the
+scoped `clean-start` command are wired. A scripted end-to-end scenario against a scratch git
+repository passed (criteria → split → serial child plan/execute → alignment → Tester →
+child Done and root Review). No local-model run has been performed; the local-model smoke and
+before/after journal comparison remain outstanding.
 
-**draft_source: D-018** — the verbatim draft text persists in a `draft_source TEXT`
-column on the tasks table:
-- `resolvePhase` routes to `criteria` directly when `draftSource` is set, so the owner
-  rewrite never runs on the root task and the original words are never overwritten.
-- `createChild` inherits `draftSource` from the parent, so every subtask carries the
-  original ask.
-- Both loops (`promote-draft.ts` and `main.ts`) inject `draftSource` as an "Original
-  request" block in `renderPrompt`, visible to every role throughout the lifecycle.
-- Schema migration in `Backlog` constructor adds the column for existing DBs; new DBs
-  get it from `CREATE TABLE IF NOT EXISTS`.
-- `INSERT` derived from `COLUMNS` ensures column-order consistency; `createDraft` uses
-  a named-INSERT for safety.
+**Clean-slate rollout:** `pnpm --filter engine clean-start <project>` selects a new
+globally unused prefix before clearing the project's task rows and per-task attempts. The
+operation preserves the shared DB, other-project rows/configuration, journals, transcripts,
+and all repository branches. As a necessary non-destructive schema cutover on the shared
+SQLite table, it adds only the fresh `raw` column; it does not migrate any task row. Each
+project must be clean-started before its old task rows can be used by the new workflow.
+The existing `book` registration was clean-started during this work; its task prefix is now
+unique for the fresh workflow. The shared store is empty, with no per-task attempt logs.
 
-**Verified:** 40/40 tests pass, typecheck clean. The round-trip test in routing.test.ts
-confirms the schema column, migration, and inheritance work end-to-end against a real DB.
-BOOK-1 is in Draft with 6567 chars of `draft_source` — ready to promote with
-`pnpm run promote-draft book`.
+**Verification:** engine typecheck clean; 50 focused engine tests pass; scripted end-to-end
+workflow passes in a disposable git repo. A targeted clean-start check showed that selected
+project task rows are removed, a synthetic other-project row survives unchanged, the task
+prefix rotates, and pre-existing branch refs are untouched; the synthetic row was then
+removed. No local-model smoke or historical journal comparison was performed.
 
-**Project prefix and task ID format (D-016, D-017) — shipped and verified.** Every project
-now carries a `prefix: string` on registration (`--prefix=ABC`), auto-derived from the key
-slug if omitted. Task IDs are `PREFIX-N` (e.g. `BOOK-1`, `BOOK-2`). The prefix is unique
-across all registered projects, validated at register time. `pnpm run unregister <key|prefix>`
-removes per-project state and optionally clone directories.
+**Remaining action:** run the queued-task split/serial-child/tester scenario against the
+configured local model when a safe compatible model session is available, and compare
+journal metrics with the previous workflow where history allows.
 
-`pnpm run list` shows `(baseBranch) [PREFIX]` per entry.
+## Design record
+
+D-019 supersedes the draft entity/promotion path and old task-role routing. Historical
+journal/transcript files are retained but are reference-only. See `workflow.md` for the
+state machine and `decisions.md` D-019 for the accepted boundaries.
+
+## Needs your sign-off
+
+Nothing blocking the refactor — its shape is decided (D-019). One proposal awaits a go/no-go:
+lessons memory (`lessons-memory.md`, R-003), which should wait for the local-model smoke.
+Other open design questions live in `ROADMAP.md` (R-001/R-002).

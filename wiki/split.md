@@ -1,90 +1,101 @@
 # Split workflow — decomposition, children, alignment
 
-A split partitions one large task into independently-planned and independently-executed subtasks. Subtasks share their top-level ancestor's branch (`bakloop/<ROOT-ID>`), so many subtasks add up to one PR (D-004).
+> **Status: accepted design, implementation underway.** This describes the split flow
+> the engine is moving to under D-019. `src/types.ts` already carries the new roles;
+> the split/queue/prompt migration and removal of the old planner→architect→critic flow
+> are still in flight and unverified. `../wiki/decisions.md` D-019 and `workflow.md` are
+> the authoritative homes; keep this file in sync when the code changes.
+
+A split partitions one large task into independently-planned and independently-executed
+children. Children share their top-level ancestor's branch (`bakloop/<ROOT-ID>`), so many
+children still add up to one PR (D-004).
 
 ## Trigger conditions
 
-A task gets split two ways:
+A task is split two ways:
 
-**1. Planner-initiated.** `resolvePhase` runs `planner` (blank plan → planner). The planner responds with `SPLIT` containing child definitions (`src/prompts.ts` parser).
+**1. Architect-initiated.** In `planning` mode the Architect responds with a split
+proposal — scoped child `raw`/title/description definitions plus a shared interface
+contract.
 
-**2. Machine-initiated (context overflow).** Any tick fails because the prompt exceeded the context window. `tick.ts:449-462`: if the error matches `CONTEXT_OVERFLOW` AND the task has no existing children (`task.subtasks.length === 0`) AND does not already carry `needs-split` label, it gets labelled `needs-split`. If it was `In Progress`, it is pulled back to `Backlog` (tick.ts:457). On the next tick, `resolvePhase:186` selects `planner` explicitly because the label is present — the prompt is now smaller (split-only branch), so it fits.
+**2. Machine-initiated (context overflow).** A tick fails because the prompt exceeded the
+context window. That says the task is too big, not wrong, so rather than re-sending a
+prompt that still won't fit, the task is routed back to planning on a prompt that only
+offers the split branch. If the Architect writes a plan anyway, the task is `Blocked` for a
+human — decomposition failing is structural, not something to retry.
 
-## Pre-split: architect contract
+## Pre-split: shared interface contract
 
-When `planner` produces `parsed.kind === "split"`, `tick.ts:518-539` checks `hasArchitectContract(task)`:
+Because planning is scoped per task, a child can't see its siblings. So no children are
+created until the Architect has written a **shared interface contract** for the parent:
+which child creates which shared artifact, signature contracts, resource IDs. Only then
+are children created, each seeded with that contract — the only cross-sibling context any
+child gets. This is D-007's requirement, now an Architect mode rather than a separate
+`architect` tick behind a label.
 
-- **No contract yet** → proposal is discarded (not persisted). Task is labelled `needs-architecture`. Next tick routes to `architect`.
-- **Contract exists** → proceed to child creation.
+`raw` context for a child is **scoped, not copied**: each child gets its own `raw` plus the
+parent's request and the contract as bounded ancestor context. The entire parent request is
+not duplicated into every child (it stays on the parent).
 
-The `architect` phase writes an interface contract into `implementationNotes`: which sibling creates which shared artifact, signature contracts, resource IDs. This is the only cross-sibling context any subtask ever gets — each child's own planner tick sees only its own task.
+## Child creation
 
-The contract pass clears the `needs-architecture` label on completion (`tick.ts:630`). It runs once.
+Each child is created as a **normal queued task** with its own scoped `raw`, title, and
+human-readable description, plus:
 
-## Children creation
+- **the shared interface contract** as ancestor context, so its planning and execution know
+  the shared surface from the start;
+- **`dependsOn`** on its immediate predecessor, giving a strict serial chain — child N+1 is
+  not even planned until child N reaches `Done`. Ordering is enforced by `readiness.isBlocked`
+  (the loop's only ordering mechanism, D-008).
 
-Back at `planner`, with the contract now in `task.implementationNotes`, children are created:
+Children execute **serially in dependency order, one at a time**, on the root ancestor's
+branch.
 
-```js
-for (const child of parsed.children) {
-  await backlog.createChild(task.id, child.title, project, {
-    notes: contract,                                    // interface contract
-    dependsOn: [previous_child_id],                     // linear chain
-    draftSource: root.draftSource + "\n\n---\n\n" + child.desc,
-  });
-}
-```
+## Partial planning is intentional
 
-Three fields per child:
+Because of the dependency chain, only the next eligible child is planned at a time — the
+same just-in-time behavior the main loop already had. A dependency-gated child stays
+unplanned until its predecessor is `Done`; that is the design, not a gap. "Fully spec'd"
+means: every task has a description/AC/DoD and the front of the chain has a plan.
 
-- **`notes`** = architect's interface contract. Seeds the child's `implementationNotes` so its planner/executor knows the shared surface from the start.
-- **`dependsOn`** = `[previous_child_id]` for all but the first. Creates a strict linear execution chain — child N+1 cannot start until child N is `Done`. Driven by `readiness.isBlocked` (the loop's only ordering mechanism, `resolvePhase`). Safe because subtasks self-finalize to `Done` on green gates and never wait for a human (D-008).
-- **`draftSource`** = root's verbatim draft text + this child's split proposal. When the child's own `criteria` tick runs (description blank → `criteria` routes), it re-derives acceptance criteria from this compound `draftSource`, keeping the child grounded in the original ask.
+## Leaf completion
 
-Each child starts in status `Backlog` with a blank description, so its own plan-mode pass runs: `owner → criteria → planner → ToDo`.
+A child reaches `Done` only after **deterministic gates pass and the Tester returns
+`PASS`**. There is no self-finalize-on-green-gates shortcut — the Tester gate applies to
+children too. Then the next eligible child is planned and executed. If any child ends
+`Blocked`, the parent does too.
+
+## Finalizing a split
+
+After every child is `Done`:
+
+1. **Architect alignment** — a distinctly-marked alignment mode checks the combined result
+   against the shared interface contract. A detected mismatch (`DRIFT`) **blocks the parent**
+   for human intervention.
+2. **Tester on the integrated diff** — evaluates the combined diff against the parent-level
+   criteria. `PASS` sends the parent to `Review`; `CHANGES` follows the usual bounded
+   Executor revision path.
+
+The parent does not reach `Review` until all three hold: every child `Done`, alignment
+passed, integrated diff passed Tester.
 
 ## Overlap detection
 
-Right after children are created, `tick.ts:576-596` runs `findCollisions` on the entire root-ancestor tree. Extracts repo-relative paths from descriptions, plans, acceptance criteria, and DoD. Reports any path claimed by two or more non-ancestor/descendant tasks.
-
-- **Blocking collisions** (code paths) → container labelled `needs-replan` (`NEEDS_REPLAN_LABEL`), set to `Blocked` (`tick.ts:590`), children stay blocked. Human must re-plan.
-- **Non-blocking** (manifests, lockfiles, append-only docs) → just commented.
-
-This check runs automatically after every split creation. It also exists as `pnpm run overlap <project>` for ad-hoc tree inspection.
-
-## Child execution
-
-Each child runs its own full pipeline independently: `owner → criteria → planner → ToDo → executor (gate loop)`. They execute strictly in dependency chain order — child N+1 is `isBlocked: true` until child N is `Done`.
-
-Subtasks **self-finalize** to `Done` on green gates (`tick.ts:813-817`):
-
-```js
-if (task.parentTaskId) {
-  await backlog.setStatus(task.id, STATUS.done);
-  return { done: false, outcome: "subtask-done", note: `${task.id}: subtask complete` };
-}
-```
-
-No separate review, no critic, no reviewer. The parent only proceeds once every child is `Done`.
-
-## Post-split: container alignment
-
-Once every child is `Done`, `excludeInFlightContainers` (tick.ts:203-212) stops excluding the parent. The loop picks it up again. The container's own role sequence:
-
-1. **`architect` alignment pass** — `resolvePhase:142` checks `hasAlignmentCheck`. If not yet seen, routes to architect. The alignment prompt references the pre-split contract. Checks finished siblings against it. `DRIFT` → `Blocked` for human (`tick.ts:631-644`).
-2. **`critic`** — judges the combined diff of all subtasks. For containers, any non-SHIP verdict (`CHANGES` or `RESPEC`) blocks for human — no single executor to hand `CHANGES` to (`tick.ts:684-694`). `SHIP` proceeds.
-3. **`reviewer`** — writes `finalSummary`, sets status to `Review`.
-
-## Container overlap check
-
-If `alignCheck` fails (alignment drift), the container is blocked. A subsequent `critic` on the same container also blocks on non-SHIP. These two gates exist because a container has no single executor to receive `CHANGES` feedback — a human resolves the mismatch before the container reaches reviewer (same pattern as `DRIFT`).
+Path-collision detection (`findCollisions`, `src/overlap.ts`, D-009) still runs after a
+split creates children: it extracts repo-relative paths from each task's text and reports
+any path claimed by two tasks that are not in an ancestor/descendant relationship. A
+blocking collision comments the report on the parent, labels it `needs-replan`, and sets it
+`Blocked`. The same check is available ad hoc via `pnpm run overlap <project>`.
 
 ## Special cases
 
-**Nested splits:** a subtask can itself be split. Same flow — `rootAncestorId` walks to the root, so nested children share the same top-level branch (`bakloop/<ROOT-ID>`). One PR total. Supported but never exercised end-to-end in practice (`gotchas.md`).
+**Nested splits:** a child can itself be split. `rootAncestorId` walks to the root, so
+nested children still share the top-level branch (`bakloop/<ROOT-ID>`) — one PR total.
+Implemented but never exercised end-to-end in practice (`gotchas.md`).
 
-**Split refused after overflow:** if `NEEDS_SPLIT_LABEL` is present and the planner writes a plan instead of another split, the task is `Blocked` for human (`tick.ts:599-613`). Decomposition failed — structural problem.
+**Unparseable split:** a malformed proposal must never crash the run — `tick.ts` blocks the
+one task with the verbatim output preserved in a comment for debugging.
 
-**Unparseable split:** if the split proposal doesn't parse (`parsed.kind === "unparseable"`), the task is `Blocked` and the verbatim output is preserved in comments for debugging (`tick.ts:505-516`).
-
-**Pre-existing children:** a task that already has `subtasks.length > 0` is treated as a container. The planner cannot split it again — it routes through the alignment/critic/reviewer sequence instead. To split further, the container itself would need to be re-planned and re-split, which requires a human.
+**Pre-existing children:** a task that already has children is treated as a container; the
+Architect does not split it again, and it routes through alignment + integrated Tester
+before review.
