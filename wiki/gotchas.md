@@ -4,6 +4,14 @@ Append-only. Each entry: symptom, cause, fix. Newest at the bottom.
 
 Capped at ~15 entries — this file loads every session.
 
+> **Historical note (refactor in progress, D-019).** Entries below were written against the
+> previous multi-role pipeline and its draft-promotion flow. Several name roles that are now
+> retired (`critic`, `senior`, `planner`, `documenter`, `researcher`) and files
+> that are being rewritten. They are kept as-is — gotchas are append-only and record traps
+> as they were found; do not edit what an old entry means. Read them for the *mechanism*
+> (parser fragility, shared counters, CLI traps), not as a description of the current
+> pipeline. Current guidance lives in `workflow.md`, `split.md`, and D-019.
+
 ---
 
 ## `git-guard.ts`'s push block is not a sandbox
